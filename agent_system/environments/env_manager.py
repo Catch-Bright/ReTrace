@@ -666,12 +666,14 @@ def make_envs(config):
         if config.env.webshop.use_small:
             file_path = os.path.join(os.path.dirname(__file__), 'env_package/webshop/webshop/data/items_shuffle_1000.json')
             attr_path = os.path.join(os.path.dirname(__file__), 'env_package/webshop/webshop/data/items_ins_v2_1000.json')
+            num_products = 1000
         else:
             file_path = os.path.join(os.path.dirname(__file__), 'env_package/webshop/webshop/data/items_shuffle.json')
             attr_path = os.path.join(os.path.dirname(__file__), 'env_package/webshop/webshop/data/items_ins_v2.json')
+            num_products = None
         env_kwargs = {
                     'observation_mode': 'text', 
-                    'num_products': None, 
+                    'num_products': num_products, 
                     'human_goals': config.env.webshop.human_goals,
                     'file_path': file_path,
                     'attr_path': attr_path
