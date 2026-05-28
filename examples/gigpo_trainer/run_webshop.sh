@@ -2,6 +2,10 @@ set -x
 ENGINE=${1:-vllm}
 ulimit -u 65536
 export VLLM_ATTENTION_BACKEND=XFORMERS
+export HF_HOME=/itdd-pfs/wangyuhao/hf_cache
+export HF_DATASETS_CACHE=/itdd-pfs/wangyuhao/hf_cache/datasets
+export HF_HUB_OFFLINE=1
+export HF_DATASETS_OFFLINE=1
 
 num_cpus_per_env_worker=0.1 # The CPU resource allocated for each environment worker. If you want to use less CPU resources, you can decrease this value.
 
@@ -14,7 +18,7 @@ mode="mean_norm" # "mean_norm" or "mean_std_norm"
 python3 -m examples.data_preprocess.prepare \
     --mode 'text' \
     --train_data_size $train_data_size \
-    --val_data_size $((val_data_size * 2)) # evaluate 2 × val_data_size tasks during each iteration
+    --val_data_size $((val_data_size)) # evaluate 2 × val_data_size tasks during each iteration
 
 python3 -m verl.trainer.main_ppo \
     algorithm.adv_estimator=gigpo \
@@ -27,7 +31,7 @@ python3 -m verl.trainer.main_ppo \
     data.filter_overlong_prompts=True \
     data.truncation='error' \
     data.return_raw_chat=True \
-    actor_rollout_ref.model.path=Qwen/Qwen2.5-1.5B-Instruct \
+    actor_rollout_ref.model.path=/itdd-pfs/wangyuhao/model \
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.actor.ppo_mini_batch_size=64 \
@@ -56,7 +60,7 @@ python3 -m verl.trainer.main_ppo \
     algorithm.gigpo.step_advantage_w=1.0 \
     algorithm.gigpo.mode=$mode \
     env.env_name=Webshop \
-    env.seed=0 \
+    env.seed=42 \
     env.max_steps=15 \
     env.rollout.n=$group_size \
     env.resources_per_worker.num_cpus=$num_cpus_per_env_worker \
