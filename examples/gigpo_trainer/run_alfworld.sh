@@ -16,6 +16,11 @@ python3 -m examples.data_preprocess.prepare \
     --train_data_size $train_data_size \
     --val_data_size $val_data_size
 
+#actor_rollout_ref.actor.ppo_mini_batch_size=256
+#ctor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=32
+#这两个是step数，不是轨迹数
+#log_prob_micro_batch_size_per_gpu=32也都是按step计算的
+
 python3 -m verl.trainer.main_ppo \
     algorithm.adv_estimator=gigpo \
     data.train_files=$HOME/data/verl-agent/text/train.parquet \
