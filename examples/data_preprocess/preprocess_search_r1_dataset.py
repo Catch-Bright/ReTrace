@@ -95,6 +95,7 @@ def process_single_row(row, current_split_name, row_index):
 def main():
     local_save_dir = os.path.expanduser(args.local_dir)
     os.makedirs(local_save_dir, exist_ok=True)
+    local_raw_dir = os.path.expanduser(args.local_raw_dir) if args.local_raw_dir else None
 
     processed_files = []
 
@@ -105,15 +106,21 @@ def main():
             logger.info(f"Processing {split} split...")
 
             try:
-                # Download Parquet file from HuggingFace
-                logger.info(f"Downloading {parquet_filename} from {args.hf_repo_id}")
-                local_parquet_filepath = hf_hub_download(
-                    repo_id=args.hf_repo_id,
-                    filename=parquet_filename,
-                    repo_type="dataset",
-                    local_dir=tmp_download_dir,
-                    local_dir_use_symlinks=False,
-                )
+                if local_raw_dir:
+                    local_parquet_filepath = os.path.join(local_raw_dir, parquet_filename)
+                    if not os.path.exists(local_parquet_filepath):
+                        raise FileNotFoundError(f"{local_parquet_filepath} does not exist")
+                    logger.info(f"Loading {parquet_filename} from local directory {local_raw_dir}")
+                else:
+                    # Download Parquet file from HuggingFace
+                    logger.info(f"Downloading {parquet_filename} from {args.hf_repo_id}")
+                    local_parquet_filepath = hf_hub_download(
+                        repo_id=args.hf_repo_id,
+                        filename=parquet_filename,
+                        repo_type="dataset",
+                        local_dir=tmp_download_dir,
+                        local_dir_use_symlinks=False,
+                    )
 
                 # Load and process Parquet file
                 df_raw = pd.read_parquet(local_parquet_filepath)
@@ -160,6 +167,11 @@ if __name__ == "__main__":
         "--local_dir",
         default="~/data/searchR1_processed_direct",
         help="Local directory to save the processed Parquet files.",
+    )
+    parser.add_argument(
+        "--local_raw_dir",
+        default=None,
+        help="Optional local directory containing raw train.parquet and test.parquet. If set, skip HuggingFace download.",
     )
     parser.add_argument("--hdfs_dir", default=None, help="Optional HDFS directory to copy the Parquet files to.")
 
