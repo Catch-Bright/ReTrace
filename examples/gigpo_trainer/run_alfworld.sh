@@ -2,6 +2,10 @@ set -x
 ENGINE=${1:-vllm}
 export VLLM_ATTENTION_BACKEND=XFORMERS
 export ALFWORLD_DATA=/itdd-pfs/wangyuhao/data/alfworld
+export HF_HOME=/itdd-pfs/wangyuhao/hf_cache
+export HF_DATASETS_CACHE=/itdd-pfs/wangyuhao/hf_cache/datasets
+export HF_HUB_OFFLINE=1
+export HF_DATASETS_OFFLINE=1
 
 num_cpus_per_env_worker=0.1 # The CPU resource allocated for each environment worker. If you want to use less CPU resources, you can decrease this value.
 
