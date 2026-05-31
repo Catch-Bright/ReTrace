@@ -156,7 +156,7 @@ def get_top_n_product_from_keywords(
         top_n_products = random.sample(all_products, k=SEARCH_RETURN_N)
     elif keywords[0] == '<a>':
         attribute = ' '.join(keywords[1:]).strip()
-        asins = attribute_to_asins[attribute]
+        asins = attribute_to_asins.get(attribute, set()) if attribute_to_asins is not None else set()
         top_n_products = [p for p in all_products if p['asin'] in asins]
     elif keywords[0] == '<c>':
         category = keywords[1].strip()
