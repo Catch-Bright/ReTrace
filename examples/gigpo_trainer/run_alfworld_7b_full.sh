@@ -1,6 +1,6 @@
 set -x
 ENGINE=${1:-vllm}
-export VLLM_ATTENTION_BACKEND=XFORMERS
+export VLLM_ATTENTION_BACKEND=FLASH_ATTN
 export ALFWORLD_DATA=/itdd-pfs/wangyuhao/data/alfworld
 export HF_HOME=/itdd-pfs/wangyuhao/hf_cache
 export HF_DATASETS_CACHE=/itdd-pfs/wangyuhao/hf_cache/datasets
