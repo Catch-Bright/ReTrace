@@ -1,6 +1,6 @@
 set -x
 ENGINE=${1:-vllm}
-export VLLM_ATTENTION_BACKEND=XFORMERS
+export VLLM_ATTENTION_BACKEND=FLASH_ATTN
 export ALFWORLD_DATA=/itdd-pfs/wangyuhao/data/alfworld
 export HF_HOME=/itdd-pfs/wangyuhao/hf_cache
 export HF_DATASETS_CACHE=/itdd-pfs/wangyuhao/hf_cache/datasets
@@ -13,6 +13,7 @@ train_data_size=16
 val_data_size=128
 group_size=8
 mode="mean_std_norm" # "mean_norm" or "mean_std_norm"
+model_path=/itdd-pfs/wangyuhao/model/qwen2.5_1_5b_instruct
 
 # We only use data preparation to indicate the modality and the data size.
 python3 -m examples.data_preprocess.prepare \
@@ -36,7 +37,7 @@ python3 -m verl.trainer.main_ppo \
     data.filter_overlong_prompts=True \
     data.truncation='error' \
     data.return_raw_chat=True \
-    actor_rollout_ref.model.path=Qwen/Qwen2.5-1.5B-Instruct \
+    actor_rollout_ref.model.path=$model_path \
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.actor.ppo_mini_batch_size=256 \
