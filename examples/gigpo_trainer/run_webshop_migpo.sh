@@ -13,7 +13,7 @@ num_cpus_per_env_worker=0.1 # The CPU resource allocated for each environment wo
 train_data_size=16
 val_data_size=128
 group_size=8
-mode="mean_std_norm" # "mean_norm" or "mean_std_norm"
+mode="mean_norm" # "mean_norm" or "mean_std_norm"
 model_path=/itdd-pfs/wangyuhao/model/qwen2.5_1_5b_instruct
 
 # MiGPO: segment-refined GiGPO for WebShop.
