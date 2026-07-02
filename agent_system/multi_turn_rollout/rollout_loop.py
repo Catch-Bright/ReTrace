@@ -386,6 +386,15 @@ class TrajectoryCollector:
                     [gamefile_to_trial_id(info.get('extra.gamefile', None)) for info in infos], dtype=object)
             batch.non_tensor_batch['step_idx'] = np.full(batch_size, _step, dtype=np.int64)
 
+            # MiGPO-WebShop: store states, goals for dynamic milestone detection
+            if 'state_before' in infos[0]:
+                batch.non_tensor_batch['states'] = np.array([info.get('state_before', '') for info in infos], dtype=object)
+            if 'state_after' in infos[0]:
+                batch.non_tensor_batch['next_states'] = np.array([info.get('state_after', '') for info in infos], dtype=object)
+            if 'goal' in infos[0]:
+                batch.non_tensor_batch['goals'] = np.array([info.get('goal', {}) for info in infos], dtype=object)
+            batch.non_tensor_batch['infos'] = np.array([info for info in infos], dtype=object)
+
             if 'tool_calling' in infos[0]:
                 tool_callings[active_masks] += np.array([info['tool_calling'] for info in infos], dtype=np.float32)[active_masks]
             # Create reward tensor, only assign rewards for active environments

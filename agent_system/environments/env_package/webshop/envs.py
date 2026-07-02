@@ -44,6 +44,11 @@ class WebshopWorker:
         info['available_actions'] = self.env.get_available_actions()
         info['task_score'] = reward
 
+        # MiGPO: store raw observation and goal for milestone detection
+        info['obs'] = obs
+        if hasattr(self.env, 'goal'):
+            info['goal'] = self.env.goal
+
         # Redefine reward. We only use rule-based reward - win for 10, lose for 0.
         if done and reward == 1.0:
             info['won'] = True
@@ -60,6 +65,12 @@ class WebshopWorker:
         info = dict(info or {})
         info['available_actions'] = self.env.get_available_actions()
         info['won'] = False
+
+        # MiGPO: store raw observation and goal for milestone detection
+        info['obs'] = obs
+        if hasattr(self.env, 'goal'):
+            info['goal'] = self.env.goal
+
         return obs, info
     
     def render(self, mode_for_render):
