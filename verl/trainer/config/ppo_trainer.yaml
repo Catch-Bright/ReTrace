@@ -252,6 +252,10 @@ algorithm:
     mode: "mean_norm" # "mean_norm" or "mean_std_norm"
     enable_similarity: False # whether to use similarity-based anchor state grouping in GiGPO (supported for text-only tasks)
     similarity_thresh: 0.95 # similarity threshold for GiGPO (0.0, 1.0)
+    # ---- MiGPO (segment-refined GiGPO) extras; only used when adv_estimator=migpo ----
+    subgroup_advantage_w: 1.0 # weight for the (obs-cluster n segment) subgroup advantage term
+    milestone_threshold: 0.85 # action<->anchor similarity threshold for segment matching
+    milestone_path: null # path to the milestone JSON; null -> gigpo/alfworld_milestones.json (or $MIGPO_MILESTONE_PATH)
   filter_groups: # DAPO from https://arxiv.org/abs/2503.14476
     enable: False
     max_num_gen_batches: 10

@@ -61,6 +61,7 @@ from verl.utils.torch_functional import masked_mean
 from verl.utils.tracking import ValidationGenerationsLogger
 from verl.workers.rollout.async_server import AsyncLLMServerManager
 from gigpo import core_gigpo
+from gigpo import core_migpo
 
 from agent_system.multi_turn_rollout import TrajectoryCollector, adjust_batch
 
@@ -94,6 +95,7 @@ class AdvantageEstimator(str, Enum):
     RLOO = "rloo"
     GRPO_PASSK = "grpo_passk"
     GiGPO = 'gigpo'
+    MiGPO = 'migpo'
 
 
 @dataclass
@@ -241,7 +243,7 @@ def compute_response_mask(data: DataProto):
     return attention_mask[:, -response_length:]
 
 
-def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_repeat=1, multi_turn=False, norm_adv_by_std_in_grpo=True, step_advantage_w=1.0, gigpo_mode="mean_std_norm", gigpo_enable_similarity=False, gigpo_similarity_thresh=0.95, **kwargs):
+def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_repeat=1, multi_turn=False, norm_adv_by_std_in_grpo=True, step_advantage_w=1.0, gigpo_mode="mean_std_norm", gigpo_enable_similarity=False, gigpo_similarity_thresh=0.95, subgroup_advantage_w=1.0, milestone_threshold=0.85, milestone_path=None, **kwargs):
     """Compute advantage estimates for policy optimization.
 
     This function computes advantage estimates using various estimators like GAE, GRPO, REINFORCE++, etc.
@@ -357,6 +359,23 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
             )
         data.batch['advantages'] = advantages
         data.batch['returns'] = returns
+    elif adv_estimator == AdvantageEstimator.MiGPO:
+        advantages, returns = core_migpo.compute_migpo_outcome_advantage(
+            token_level_rewards=data.batch['token_level_rewards'], # for episode group reward computing
+            step_rewards=data.batch['step_rewards'], # for step / subgroup reward computing
+            response_mask=data.batch['response_mask'],
+            anchor_obs=data.non_tensor_batch['anchor_obs'],
+            segment_ids=data.non_tensor_batch['segment_ids'],
+            index=data.non_tensor_batch['uid'],
+            traj_index=data.non_tensor_batch['traj_uid'],
+            step_advantage_w=step_advantage_w,
+            subgroup_advantage_w=subgroup_advantage_w,
+            mode=gigpo_mode,
+            enable_similarity=gigpo_enable_similarity,
+            similarity_thresh=gigpo_similarity_thresh,
+            )
+        data.batch['advantages'] = advantages
+        data.batch['returns'] = returns
     else:
         raise NotImplementedError
     return data
@@ -451,7 +470,8 @@ class RayPPOTrainer:
             AdvantageEstimator.REMAX,
             AdvantageEstimator.RLOO,
             AdvantageEstimator.REINFORCE_PLUS_PLUS_BASELINE,
-            AdvantageEstimator.GiGPO
+            AdvantageEstimator.GiGPO,
+            AdvantageEstimator.MiGPO
         ]:
             self.use_critic = False
         else:
@@ -1108,12 +1128,22 @@ class RayPPOTrainer:
                     del batch
                     batch = gen_batch_output
 
-                    if self.config.algorithm.adv_estimator == AdvantageEstimator.GiGPO:
+                    if self.config.algorithm.adv_estimator in (AdvantageEstimator.GiGPO, AdvantageEstimator.MiGPO):
                         step_rewards_tensor = core_gigpo.compute_step_discounted_returns(
                             batch=batch,
                             gamma=self.config.algorithm.gamma
                         )
                         batch.batch['step_rewards'] = step_rewards_tensor
+
+                    if self.config.algorithm.adv_estimator == AdvantageEstimator.MiGPO:
+                        # Compute subtask segment ids while step order within each
+                        # trajectory is still intact (before balance_batch reorders).
+                        segment_ids = core_migpo.compute_batch_segment_ids(
+                            batch=batch,
+                            threshold=self.config.algorithm.gigpo.get('milestone_threshold', 0.85),
+                            milestone_path=self.config.algorithm.gigpo.get('milestone_path', None),
+                        )
+                        batch.non_tensor_batch['segment_ids'] = segment_ids
                     
                     batch = adjust_batch(self.config, batch)
 
@@ -1233,6 +1263,9 @@ class RayPPOTrainer:
                             gigpo_mode=self.config.algorithm.gigpo.mode,
                             gigpo_enable_similarity= self.config.algorithm.gigpo.enable_similarity,
                             gigpo_similarity_thresh=self.config.algorithm.gigpo.similarity_thresh,
+                            subgroup_advantage_w=self.config.algorithm.gigpo.get('subgroup_advantage_w', 1.0),
+                            milestone_threshold=self.config.algorithm.gigpo.get('milestone_threshold', 0.85),
+                            milestone_path=self.config.algorithm.gigpo.get('milestone_path', None),
                         )
 
                     # update critic
