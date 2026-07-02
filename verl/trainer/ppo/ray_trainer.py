@@ -1138,11 +1138,42 @@ class RayPPOTrainer:
                     if self.config.algorithm.adv_estimator == AdvantageEstimator.MiGPO:
                         # Compute subtask segment ids while step order within each
                         # trajectory is still intact (before balance_batch reorders).
-                        segment_ids = core_migpo.compute_batch_segment_ids(
-                            batch=batch,
-                            threshold=self.config.algorithm.gigpo.get('milestone_threshold', 0.85),
-                            milestone_path=self.config.algorithm.gigpo.get('milestone_path', None),
-                        )
+
+                        # Check if this is WebShop (requires dynamic milestone detection)
+                        is_webshop = 'webshop' in self.config.env.env_name.lower()
+
+                        if is_webshop:
+                            # WebShop: use dynamic milestone detection
+                            from gigpo.core_migpo_webshop import compute_batch_segment_ids_webshop
+                            from agent_system.environments.env_package.webshop.webshop.web_agent_site.engine.engine import load_products
+                            from agent_system.environments.env_package.webshop.webshop.web_agent_site.utils import DEFAULT_FILE_PATH, DEFAULT_ATTR_PATH
+
+                            # Load product catalog (cached after first load)
+                            if not hasattr(self, '_webshop_product_lookup'):
+                                print("[MiGPO-WebShop] Loading product catalog for milestone detection...")
+                                _, product_lookup, product_prices, _ = load_products(
+                                    filepath=DEFAULT_FILE_PATH,
+                                    attrpath=DEFAULT_ATTR_PATH,
+                                    num_products=None,
+                                    human_goals=self.config.env.webshop.get('human_goals', True),
+                                )
+                                self._webshop_product_lookup = product_lookup
+                                self._webshop_price_lookup = product_prices
+                                print(f"[MiGPO-WebShop] Loaded {len(product_lookup)} products.")
+
+                            segment_ids = compute_batch_segment_ids_webshop(
+                                batch=batch,
+                                product_lookup=self._webshop_product_lookup,
+                                price_lookup=self._webshop_price_lookup,
+                            )
+                        else:
+                            # ALFWorld or other: use static action anchor matching
+                            segment_ids = core_migpo.compute_batch_segment_ids(
+                                batch=batch,
+                                threshold=self.config.algorithm.gigpo.get('milestone_threshold', 0.85),
+                                milestone_path=self.config.algorithm.gigpo.get('milestone_path', None),
+                            )
+
                         batch.non_tensor_batch['segment_ids'] = segment_ids
                     
                     batch = adjust_batch(self.config, batch)
