@@ -36,9 +36,19 @@ import numpy as np
 from verl import DataProto
 
 
+# WebShop defines four sequential milestones: SEARCH -> DETAIL -> OPTIONS -> PURCHASE.
+WEBSHOP_NUM_MILESTONES = 4
+
+
 def compute_batch_segment_ids_webshop(batch: DataProto) -> np.ndarray:
+    """Thin wrapper returning only segment_ids (see ``compute_batch_segment_meta_webshop``)."""
+    segment_ids, _flags, _num = compute_batch_segment_meta_webshop(batch)
+    return segment_ids
+
+
+def compute_batch_segment_meta_webshop(batch: DataProto):
     """
-    Derive per-step segment_ids for a batch of WebShop trajectories from the
+    Derive per-step segment metadata for a batch of WebShop trajectories from the
     ``milestone_achieved`` flags produced during rollout.
 
     IMPORTANT: call this while step order within each trajectory is intact
@@ -49,9 +59,10 @@ def compute_batch_segment_ids_webshop(batch: DataProto) -> np.ndarray:
         - ``milestone_achieved``:  bool flag, True on steps that reach a new milestone
         - ``step_idx`` (optional): in-trajectory step index, used to order steps
 
-    Returns:
-        segment_ids: np.ndarray[int32] of shape (bsz,), aligned to batch order.
-            0 before the first milestone, 1 after the first, 2 after the second, ...
+    Returns a tuple aligned to batch order (all shape ``(bsz,)``):
+        segment_ids:      int32, 0 before the first milestone, 1 after the first, ...
+        milestone_flags:  bool,  the ``milestone_achieved`` flags (True on achieving steps).
+        num_milestones:   int32, WEBSHOP_NUM_MILESTONES for every step (fixed M=4).
     """
     ntb = batch.non_tensor_batch
     traj_uids = ntb["traj_uid"]
@@ -60,10 +71,12 @@ def compute_batch_segment_ids_webshop(batch: DataProto) -> np.ndarray:
 
     bsz = len(traj_uids)
     segment_ids = np.zeros(bsz, dtype=np.int32)
+    milestone_flags = np.zeros(bsz, dtype=bool)
+    num_milestones = np.full(bsz, WEBSHOP_NUM_MILESTONES, dtype=np.int32)
 
     if milestone_achieved is None:
         print("[MiGPO-WebShop Warning] milestone_achieved missing; all steps -> segment 0.")
-        return segment_ids
+        return segment_ids, milestone_flags, num_milestones
 
     for uid in np.unique(traj_uids):
         traj_pos = np.where(traj_uids == uid)[0]  # positions in the batch
@@ -80,6 +93,7 @@ def compute_batch_segment_ids_webshop(batch: DataProto) -> np.ndarray:
         for p in ordered_pos:
             segment_ids[p] = seg
             if bool(milestone_achieved[p]):
+                milestone_flags[p] = True
                 seg += 1
 
-    return segment_ids
+    return segment_ids, milestone_flags, num_milestones
