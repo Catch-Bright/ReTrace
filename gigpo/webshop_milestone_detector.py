@@ -28,6 +28,20 @@ from enum import Enum, auto
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Set, Tuple, Any
 
+import os
+import sys
+
+# WebShop's engine.py uses absolute imports (`from web_agent_site.utils import ...`),
+# so the inner `webshop/webshop` dir must be on sys.path. The Ray env workers add it
+# lazily in WebshopWorker.__init__, but this module is imported in the main trainer
+# process where that path was never added — causing ModuleNotFoundError.
+_WEBSHOP_ROOT = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "agent_system", "environments", "env_package", "webshop", "webshop",
+)
+if _WEBSHOP_ROOT not in sys.path:
+    sys.path.append(_WEBSHOP_ROOT)
+
 from agent_system.environments.env_package.webshop.webshop.web_agent_site.engine.engine import (  # noqa: E501
     load_products,
     parse_action,
