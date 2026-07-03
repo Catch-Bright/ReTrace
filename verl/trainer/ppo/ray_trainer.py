@@ -1136,24 +1136,42 @@ class RayPPOTrainer:
                         batch.batch['step_rewards'] = step_rewards_tensor
 
                     if self.config.algorithm.adv_estimator == AdvantageEstimator.MiGPO:
-                        # Compute subtask segment ids while step order within each
+                        # Compute subtask segment metadata while step order within each
                         # trajectory is still intact (before balance_batch reorders).
                         if 'milestone_achieved' in batch.non_tensor_batch:
                             # WebShop: milestones were detected inside the env worker
                             # during rollout; derive segments from those flags. No
                             # product catalog is (re)loaded in this process.
-                            from gigpo.core_migpo_webshop import compute_batch_segment_ids_webshop
-                            segment_ids = compute_batch_segment_ids_webshop(batch=batch)
+                            from gigpo.core_migpo_webshop import compute_batch_segment_meta_webshop
+                            segment_ids, milestone_flags, num_milestones = \
+                                compute_batch_segment_meta_webshop(batch=batch)
                         else:
                             # ALFWorld or other: static action anchor matching.
-                            segment_ids = core_migpo.compute_batch_segment_ids(
-                                batch=batch,
-                                threshold=self.config.algorithm.gigpo.get('milestone_threshold', 0.85),
-                                milestone_path=self.config.algorithm.gigpo.get('milestone_path', None),
-                            )
+                            segment_ids, milestone_flags, num_milestones = \
+                                core_migpo.compute_batch_segment_meta(
+                                    batch=batch,
+                                    threshold=self.config.algorithm.gigpo.get('milestone_threshold', 0.85),
+                                    milestone_path=self.config.algorithm.gigpo.get('milestone_path', None),
+                                )
 
                         batch.non_tensor_batch['segment_ids'] = segment_ids
-                    
+
+                        # MiGPO subtask-shaped step reward: split the task reward over
+                        # its milestones and credit each achieved subtask with a
+                        # cumulative-phase-length discount + geometric distance decay.
+                        # This REPLACES GiGPO's discounted-return step_rewards.
+                        if self.config.algorithm.gigpo.get('use_subtask_shaped_reward', True):
+                            shaped = core_migpo.compute_subtask_shaped_step_rewards(
+                                batch=batch,
+                                segment_ids=segment_ids,
+                                milestone_flags=milestone_flags,
+                                num_milestones=num_milestones,
+                                gamma=self.config.algorithm.gamma,
+                                beta=self.config.algorithm.gigpo.get('subtask_decay_beta', 0.5),
+                                r_max=self.config.algorithm.gigpo.get('subtask_reward_max', 10.0),
+                            )
+                            batch.batch['step_rewards'] = shaped
+
                     batch = adjust_batch(self.config, batch)
 
                     batch.batch["response_mask"] = compute_response_mask(batch)
