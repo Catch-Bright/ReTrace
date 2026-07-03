@@ -33,10 +33,15 @@ class WebshopWorker:
         project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), 'webshop'))
         sys.path.append(project_root)
         from web_agent_site.envs import WebAgentTextEnv  # noqa: WPS433 (runtime import)
-        
+
         env_kwargs['seed'] = seed
         self.env = gym.make('WebAgentTextEnv-v0', **env_kwargs)
-    
+
+        # MiGPO: per-worker milestone detector. It is (re)created on every reset
+        # using the environment's own product catalog, so no extra data is loaded.
+        self.milestone_detector = None
+        self.prev_obs = None
+
     def step(self, action):
         """Execute a step in the environment"""
         obs, reward, done, info = self.env.step(action)
@@ -44,10 +49,26 @@ class WebshopWorker:
         info['available_actions'] = self.env.get_available_actions()
         info['task_score'] = reward
 
-        # MiGPO: store raw observation and goal for milestone detection
-        info['obs'] = obs
-        if hasattr(self.env, 'goal'):
-            info['goal'] = self.env.goal
+        # MiGPO: detect the milestone phase for this transition. Runs inside the
+        # env worker (which already holds the product catalog), so the main
+        # trainer process never needs to reload the 5GB product file.
+        if self.milestone_detector is not None:
+            # On the terminal step, hand the detector the env's verbose reward
+            # breakdown so the PURCHASE milestone can be confirmed accurately.
+            verbose_info = None
+            if done:
+                session_id = self.env.session
+                verbose_info = self.env.server.user_sessions.get(session_id, {}).get('verbose_info')
+
+            result = self.milestone_detector.process(
+                action=action,
+                state=self.prev_obs,
+                next_state=obs,
+                info={'verbose': verbose_info} if verbose_info else None,
+            )
+            info['milestone_phase'] = result.phase.value
+            info['milestone_achieved'] = result.achieved
+        self.prev_obs = obs
 
         # Redefine reward. We only use rule-based reward - win for 10, lose for 0.
         if done and reward == 1.0:
@@ -58,7 +79,7 @@ class WebshopWorker:
             reward = 0
 
         return obs, reward, done, info
-    
+
     def reset(self, idx):
         """Reset the environment with given session index"""
         obs, info = self.env.reset(session=idx)
@@ -66,10 +87,19 @@ class WebshopWorker:
         info['available_actions'] = self.env.get_available_actions()
         info['won'] = False
 
-        # MiGPO: store raw observation and goal for milestone detection
-        info['obs'] = obs
-        if hasattr(self.env, 'goal'):
-            info['goal'] = self.env.goal
+        # MiGPO: (re)initialize the milestone detector with this session's goal
+        # and the env's in-memory product catalog (product_item_dict / product_prices).
+        from gigpo.webshop_milestone_detector import MilestoneDetector
+        session_id = self.env.session
+        goal_data = self.env.server.user_sessions[session_id]['goal']
+        self.milestone_detector = MilestoneDetector(
+            goal_data,
+            self.env.server.product_item_dict,
+            self.env.server.product_prices,
+        )
+        self.prev_obs = obs
+        info['milestone_phase'] = self.milestone_detector.phase.value
+        info['milestone_achieved'] = False
 
         return obs, info
     

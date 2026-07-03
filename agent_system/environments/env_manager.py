@@ -404,10 +404,6 @@ class WebshopEnvironmentManager(EnvironmentManagerBase):
 
     def step(self, text_actions: List[str]):
         actions, valids = self.projection_f(text_actions)
-
-        # MiGPO: store raw state before action for milestone detection
-        raw_state_before = [info.get('obs', '') for info in self.envs.get_current_infos()] if hasattr(self.envs, 'get_current_infos') else [''] * len(actions)
-
         next_obs, rewards, dones, infos = self.envs.step(actions)
 
         next_obs = self.format_obs(next_obs)
@@ -423,10 +419,6 @@ class WebshopEnvironmentManager(EnvironmentManagerBase):
         # add action_valid to infos
         for i, info in enumerate(infos):
             info['is_action_valid'] = to_numpy(valids[i])
-            # MiGPO: store action, raw states for WebShop milestone detection
-            info['action'] = actions[i]
-            info['state_before'] = raw_state_before[i] if i < len(raw_state_before) else ''
-            info['state_after'] = info.get('obs', '')
 
         rewards = to_numpy(rewards)
         dones = to_numpy(dones)
