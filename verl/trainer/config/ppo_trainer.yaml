@@ -256,6 +256,10 @@ algorithm:
     subgroup_advantage_w: 1.0 # weight for the (obs-cluster n segment) subgroup advantage term
     milestone_threshold: 0.85 # action<->anchor similarity threshold for segment matching
     milestone_path: null # path to the milestone JSON; null -> gigpo/alfworld_milestones.json (or $MIGPO_MILESTONE_PATH)
+    # ---- MiGPO subtask-shaped step reward (replaces GiGPO discounted-return step_rewards) ----
+    use_subtask_shaped_reward: True # if False, MiGPO keeps GiGPO's discounted-return step_rewards
+    subtask_reward_max: 10.0 # total task reward R_max, split equally over the task's milestones
+    subtask_decay_beta: 0.5 # geometric decay beta^(j-s) for farther completed subtasks (0<beta<=1)
   filter_groups: # DAPO from https://arxiv.org/abs/2503.14476
     enable: False
     max_num_gen_batches: 10

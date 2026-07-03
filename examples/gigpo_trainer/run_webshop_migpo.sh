@@ -72,6 +72,8 @@ python3 -m verl.trainer.main_ppo \
     algorithm.gigpo.step_advantage_w=0 \
     algorithm.gigpo.subgroup_advantage_w=1.0 \
     algorithm.gigpo.mode=$mode \
+    algorithm.gigpo.use_subtask_shaped_reward=True \
+    algorithm.gigpo.subtask_decay_beta=0.5 \
     env.env_name=Webshop \
     env.seed=42 \
     env.max_steps=15 \
