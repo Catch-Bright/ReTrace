@@ -3,7 +3,7 @@
 Standalone milestone detector for WebShop trajectories.
 
 This module provides a reusable interface for checking whether a sequence of
-actions/observations has reached the four MIGPO milestones:
+actions/observations has reached the four WIGPO milestones:
 
 1. Search phase: a search results page contains at least one product that
    satisfies all goal constraints (attributes, options availability, price).

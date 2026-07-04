@@ -61,7 +61,7 @@ from verl.utils.torch_functional import masked_mean
 from verl.utils.tracking import ValidationGenerationsLogger
 from verl.workers.rollout.async_server import AsyncLLMServerManager
 from gigpo import core_gigpo
-from gigpo import core_migpo
+from gigpo import core_wigpo
 
 from agent_system.multi_turn_rollout import TrajectoryCollector, adjust_batch
 
@@ -95,7 +95,7 @@ class AdvantageEstimator(str, Enum):
     RLOO = "rloo"
     GRPO_PASSK = "grpo_passk"
     GiGPO = 'gigpo'
-    MiGPO = 'migpo'
+    WiGPO = 'wigpo'
 
 
 @dataclass
@@ -359,8 +359,8 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
             )
         data.batch['advantages'] = advantages
         data.batch['returns'] = returns
-    elif adv_estimator == AdvantageEstimator.MiGPO:
-        advantages, returns = core_migpo.compute_migpo_outcome_advantage(
+    elif adv_estimator == AdvantageEstimator.WiGPO:
+        advantages, returns = core_wigpo.compute_wigpo_outcome_advantage(
             token_level_rewards=data.batch['token_level_rewards'], # for episode group reward computing
             step_rewards=data.batch['step_rewards'], # for step / subgroup reward computing
             response_mask=data.batch['response_mask'],
@@ -471,7 +471,7 @@ class RayPPOTrainer:
             AdvantageEstimator.RLOO,
             AdvantageEstimator.REINFORCE_PLUS_PLUS_BASELINE,
             AdvantageEstimator.GiGPO,
-            AdvantageEstimator.MiGPO
+            AdvantageEstimator.WiGPO
         ]:
             self.use_critic = False
         else:
@@ -1128,27 +1128,27 @@ class RayPPOTrainer:
                     del batch
                     batch = gen_batch_output
 
-                    if self.config.algorithm.adv_estimator in (AdvantageEstimator.GiGPO, AdvantageEstimator.MiGPO):
+                    if self.config.algorithm.adv_estimator in (AdvantageEstimator.GiGPO, AdvantageEstimator.WiGPO):
                         step_rewards_tensor = core_gigpo.compute_step_discounted_returns(
                             batch=batch,
                             gamma=self.config.algorithm.gamma
                         )
                         batch.batch['step_rewards'] = step_rewards_tensor
 
-                    if self.config.algorithm.adv_estimator == AdvantageEstimator.MiGPO:
+                    if self.config.algorithm.adv_estimator == AdvantageEstimator.WiGPO:
                         # Compute subtask segment metadata while step order within each
                         # trajectory is still intact (before balance_batch reorders).
                         if 'milestone_achieved' in batch.non_tensor_batch:
                             # WebShop: milestones were detected inside the env worker
                             # during rollout; derive segments from those flags. No
                             # product catalog is (re)loaded in this process.
-                            from gigpo.core_migpo_webshop import compute_batch_segment_meta_webshop
+                            from gigpo.core_wigpo_webshop import compute_batch_segment_meta_webshop
                             segment_ids, milestone_flags, num_milestones = \
                                 compute_batch_segment_meta_webshop(batch=batch)
                         else:
                             # ALFWorld or other: static action anchor matching.
                             segment_ids, milestone_flags, num_milestones = \
-                                core_migpo.compute_batch_segment_meta(
+                                core_wigpo.compute_batch_segment_meta(
                                     batch=batch,
                                     threshold=self.config.algorithm.gigpo.get('milestone_threshold', 0.85),
                                     milestone_path=self.config.algorithm.gigpo.get('milestone_path', None),
@@ -1156,12 +1156,12 @@ class RayPPOTrainer:
 
                         batch.non_tensor_batch['segment_ids'] = segment_ids
 
-                        # MiGPO subtask-shaped step reward: split the task reward over
+                        # WiGPO subtask-shaped step reward: split the task reward over
                         # its milestones and credit each achieved subtask with a
                         # cumulative-phase-length discount + geometric distance decay.
                         # This REPLACES GiGPO's discounted-return step_rewards.
                         if self.config.algorithm.gigpo.get('use_subtask_shaped_reward', True):
-                            shaped = core_migpo.compute_subtask_shaped_step_rewards(
+                            shaped = core_wigpo.compute_subtask_shaped_step_rewards(
                                 batch=batch,
                                 segment_ids=segment_ids,
                                 milestone_flags=milestone_flags,

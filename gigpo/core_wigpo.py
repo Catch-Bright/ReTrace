@@ -1,4 +1,4 @@
-# Copyright 2025 verl-agent (MiGPO) contributors.
+# Copyright 2025 verl-agent (WiGPO) contributors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,9 +13,9 @@
 # limitations under the License.
 
 """
-Core functions for MiGPO (Milestone-Guided / seGmented GiGPO).
+Core functions for WiGPO (Milestone-Guided / seGmented GiGPO).
 
-MiGPO *refines* GiGPO's anchor-state (obs) grouping with an additional
+WiGPO *refines* GiGPO's anchor-state (obs) grouping with an additional
 subtask-segment partition, and adds a third advantage term:
 
     adv = episode_adv
@@ -32,7 +32,7 @@ Both step_adv and subgroup_adv normalize the *same* GiGPO ``step_rewards``
 
 This module reuses the numerically-tested GiGPO primitives
 (``episode_norm_reward``, ``build_step_group``, ``step_norm_reward``) from
-``core_gigpo`` so that MiGPO with ``subgroup_advantage_w == 0`` is *identical*
+``core_gigpo`` so that WiGPO with ``subgroup_advantage_w == 0`` is *identical*
 to GiGPO.
 """
 
@@ -89,10 +89,10 @@ class MilestoneLoader:
             return
 
         if json_path is None:
-            json_path = os.environ.get("MIGPO_MILESTONE_PATH", None) or None
+            json_path = os.environ.get("WIGPO_MILESTONE_PATH", None) or None
         if json_path is None:
             # Fall back to the milestone JSON shipped inside the gigpo package.
-            # __file__ is this core_migpo.py, so dirname gives us the gigpo/ directory.
+            # __file__ is this core_wigpo.py, so dirname gives us the gigpo/ directory.
             default_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "alfworld_milestones.json")
             if os.path.exists(default_path):
                 json_path = default_path
@@ -285,7 +285,7 @@ def compute_batch_segment_meta(batch: DataProto,
     num_milestones = np.zeros(bsz, dtype=np.int32)
 
     if actions is None or trial_ids is None:
-        print("[MiGPO Warning] actions/trial_id missing; all steps -> segment 0.")
+        print("[WiGPO Warning] actions/trial_id missing; all steps -> segment 0.")
         return segment_ids, milestone_flags, num_milestones
 
     for uid in np.unique(traj_uids):
@@ -330,7 +330,7 @@ def compute_subtask_shaped_step_rewards(batch: DataProto,
                                         r_max: float = 10.0,
                                         reward_mode: str = 'cumulative') -> torch.Tensor:
     """
-    Compute the MiGPO subtask-shaped per-step reward that *replaces* GiGPO's
+    Compute the WiGPO subtask-shaped per-step reward that *replaces* GiGPO's
     discounted-return ``step_rewards``.
 
     Two reward modes are supported:
@@ -472,12 +472,12 @@ def build_subgroup_uids(step_group_uids: np.ndarray,
         subgroup_size_list = list(subgroup_sizes.values())
 
         # Overall statistics
-        print(f"\n[MiGPO Grouping Statistics]")
+        print(f"\n[WiGPO Grouping Statistics]")
         print(f"  GiGPO obs-groups: {len(obs_sizes)} groups")
         print(f"    Avg size: {np.mean(obs_size_list):.2f}, "
               f"Min: {min(obs_size_list)}, Max: {max(obs_size_list)}")
 
-        print(f"  MiGPO subgroups (obs ∩ segment): {len(subgroup_sizes)} groups")
+        print(f"  WiGPO subgroups (obs ∩ segment): {len(subgroup_sizes)} groups")
         print(f"    Avg size: {np.mean(subgroup_size_list):.2f}, "
               f"Min: {min(subgroup_size_list)}, Max: {max(subgroup_size_list)}")
 
@@ -504,10 +504,10 @@ def build_subgroup_uids(step_group_uids: np.ndarray,
 
 
 # ---------------------------------------------------------- #
-# --------------- MiGPO advantage -------------------------- #
+# --------------- WiGPO advantage -------------------------- #
 # ---------------------------------------------------------- #
 
-def compute_migpo_outcome_advantage(token_level_rewards: torch.Tensor,
+def compute_wigpo_outcome_advantage(token_level_rewards: torch.Tensor,
                                     step_rewards: torch.Tensor,
                                     response_mask: torch.Tensor,
                                     anchor_obs: np.ndarray,
@@ -522,7 +522,7 @@ def compute_migpo_outcome_advantage(token_level_rewards: torch.Tensor,
                                     similarity_thresh: float = 0.95,
                                     ):
     """
-    Compute MiGPO advantages: GiGPO refined by subtask-segment subgroups.
+    Compute WiGPO advantages: GiGPO refined by subtask-segment subgroups.
 
         adv = episode_adv
               + step_advantage_w    * step_adv         (obs-cluster group)
@@ -552,7 +552,7 @@ def compute_migpo_outcome_advantage(token_level_rewards: torch.Tensor,
         step_rewards, response_mask, step_group_uids, epsilon, remove_std
     )
 
-    # 4. MiGPO subgroup = obs-cluster n segment.
+    # 4. WiGPO subgroup = obs-cluster n segment.
     subgroup_uids = build_subgroup_uids(step_group_uids, segment_ids, summarize=True)
 
     # 5. Subgroup-level advantage: normalize the SAME step_rewards, finer groups.

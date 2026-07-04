@@ -376,17 +376,17 @@ class TrajectoryCollector:
             else:
                 batch.non_tensor_batch['is_action_valid'] = np.ones(batch_size, dtype=bool)
 
-            # MiGPO: store projected action, trial_id (from gamefile) and in-trajectory step index.
+            # WiGPO: store projected action, trial_id (from gamefile) and in-trajectory step index.
             # These are needed to match action anchors and build subtask segments.
             if 'action' in infos[0]:
                 batch.non_tensor_batch['actions'] = np.array([info.get('action', '') for info in infos], dtype=object)
             if 'extra.gamefile' in infos[0]:
-                from gigpo.core_migpo import gamefile_to_trial_id
+                from gigpo.core_wigpo import gamefile_to_trial_id
                 batch.non_tensor_batch['trial_id'] = np.array(
                     [gamefile_to_trial_id(info.get('extra.gamefile', None)) for info in infos], dtype=object)
             batch.non_tensor_batch['step_idx'] = np.full(batch_size, _step, dtype=np.int64)
 
-            # MiGPO-WebShop: the env worker already computed the milestone phase for
+            # WiGPO-WebShop: the env worker already computed the milestone phase for
             # this step (using its in-memory catalog). Just collect the two lightweight
             # scalar fields; segments are derived from milestone_achieved downstream.
             if 'milestone_achieved' in infos[0]:

@@ -15,11 +15,11 @@ group_size=8
 mode="mean_std_norm" # "mean_norm" or "mean_std_norm"
 model_path=/itdd-pfs/wangyuhao/model/qwen2.5_1_5b_instruct
 
-# MiGPO: segment-refined GiGPO. Anchors JSON ships inside the gigpo package;
+# WiGPO: segment-refined GiGPO. Anchors JSON ships inside the gigpo package;
 # override with milestone_path=... if you keep it elsewhere.
 # Note: `gigpo` has no __init__.py (namespace package), so it has no
-# top-level __file__; resolve the path via the core_migpo submodule instead.
-milestone_path=$(python3 -c "import os, gigpo.core_migpo as m; print(os.path.join(os.path.dirname(os.path.abspath(m.__file__)), 'alfworld_milestones.json'))")
+# top-level __file__; resolve the path via the core_wigpo submodule instead.
+milestone_path=$(python3 -c "import os, gigpo.core_wigpo as m; print(os.path.join(os.path.dirname(os.path.abspath(m.__file__)), 'alfworld_milestones.json'))")
 if [ ! -f "$milestone_path" ]; then
     echo "ERROR: could not resolve milestone_path (got: '$milestone_path')" >&2
     exit 1
@@ -33,7 +33,7 @@ python3 -m examples.data_preprocess.prepare \
     --val_data_size $val_data_size
 
 python3 -m verl.trainer.main_ppo \
-    algorithm.adv_estimator=migpo \
+    algorithm.adv_estimator=wigpo \
     data.train_files=$HOME/data/verl-agent/text/train.parquet \
     data.val_files=$HOME/data/verl-agent/text/test.parquet \
     data.train_batch_size=$train_data_size \
@@ -82,7 +82,7 @@ python3 -m verl.trainer.main_ppo \
     trainer.critic_warmup=0 \
     trainer.logger=['console','wandb'] \
     trainer.project_name='verl_agent_alfworld' \
-    trainer.experiment_name='migpo_qwen2.5_1.5b' \
+    trainer.experiment_name='wigpo_qwen2.5_1.5b' \
     trainer.n_gpus_per_node=2 \
     trainer.nnodes=1 \
     trainer.save_freq=-1 \

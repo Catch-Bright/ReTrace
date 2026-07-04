@@ -16,7 +16,7 @@ group_size=8
 mode="mean_norm" # "mean_norm" or "mean_std_norm"
 model_path=/itdd-pfs/wangyuhao/model/qwen2.5_1_5b_instruct
 
-# MiGPO: segment-refined GiGPO for WebShop.
+# WiGPO: segment-refined GiGPO for WebShop.
 # Unlike ALFWorld (static action anchor matching), WebShop uses dynamic milestone detection:
 #   - SEARCH: search results contain goal-consistent product
 #   - DETAIL: clicked into goal-consistent product detail page
@@ -24,7 +24,7 @@ model_path=/itdd-pfs/wangyuhao/model/qwen2.5_1_5b_instruct
 #   - PURCHASE: bought goal-consistent product
 # The webshop_milestone_detector.py handles this logic automatically.
 
-echo "Running MiGPO on WebShop with dynamic milestone detection"
+echo "Running WiGPO on WebShop with dynamic milestone detection"
 
 # We only use data preparation to indicate the modality and the data size.
 python3 -m examples.data_preprocess.prepare \
@@ -33,7 +33,7 @@ python3 -m examples.data_preprocess.prepare \
     --val_data_size $((val_data_size * 2))
 
 python3 -m verl.trainer.main_ppo \
-    algorithm.adv_estimator=migpo \
+    algorithm.adv_estimator=wigpo \
     data.train_files=$HOME/data/verl-agent/text/train.parquet \
     data.val_files=$HOME/data/verl-agent/text/test.parquet \
     data.train_batch_size=$train_data_size \
@@ -83,7 +83,7 @@ python3 -m verl.trainer.main_ppo \
     trainer.critic_warmup=0 \
     trainer.logger=['console','wandb'] \
     trainer.project_name='verl_agent_webshop' \
-    trainer.experiment_name='migpo_qwen2.5_1.5b-beacon' \
+    trainer.experiment_name='wigpo_qwen2.5_1.5b-beacon' \
     trainer.n_gpus_per_node=2 \
     trainer.nnodes=1 \
     trainer.save_freq=-1 \

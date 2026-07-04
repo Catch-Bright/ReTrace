@@ -37,7 +37,7 @@ class WebshopWorker:
         env_kwargs['seed'] = seed
         self.env = gym.make('WebAgentTextEnv-v0', **env_kwargs)
 
-        # MiGPO: per-worker milestone detector. It is (re)created on every reset
+        # WiGPO: per-worker milestone detector. It is (re)created on every reset
         # using the environment's own product catalog, so no extra data is loaded.
         self.milestone_detector = None
         self.prev_obs = None
@@ -49,7 +49,7 @@ class WebshopWorker:
         info['available_actions'] = self.env.get_available_actions()
         info['task_score'] = reward
 
-        # MiGPO: detect the milestone phase for this transition. Runs inside the
+        # WiGPO: detect the milestone phase for this transition. Runs inside the
         # env worker (which already holds the product catalog), so the main
         # trainer process never needs to reload the 5GB product file.
         if self.milestone_detector is not None:
@@ -87,7 +87,7 @@ class WebshopWorker:
         info['available_actions'] = self.env.get_available_actions()
         info['won'] = False
 
-        # MiGPO: (re)initialize the milestone detector with this session's goal
+        # WiGPO: (re)initialize the milestone detector with this session's goal
         # and the env's in-memory product catalog (product_item_dict / product_prices).
         from gigpo.webshop_milestone_detector import MilestoneDetector
         session_id = self.env.session

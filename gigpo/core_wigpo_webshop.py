@@ -1,4 +1,4 @@
-# Copyright 2025 verl-agent (MiGPO) contributors.
+# Copyright 2025 verl-agent (WiGPO) contributors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@
 # limitations under the License.
 
 """
-WebShop-specific MiGPO segment computation.
+WebShop-specific WiGPO segment computation.
 
 Unlike ALFWorld (static action-anchor matching against a milestone JSON), WebShop
 milestones are detected *inside the environment worker* during rollout, because
@@ -28,7 +28,7 @@ a step's segment id is the number of milestones already achieved *before* it in
 the same trajectory. Steps between two consecutive milestone achievements thus
 share one segment, exactly mirroring the ALFWorld segment semantics. The heavy
 lifting (subgroup construction + advantage normalization) is reused unchanged
-from ``core_migpo`` via ``compute_migpo_outcome_advantage``.
+from ``core_wigpo`` via ``compute_wigpo_outcome_advantage``.
 """
 
 import numpy as np
@@ -75,7 +75,7 @@ def compute_batch_segment_meta_webshop(batch: DataProto):
     num_milestones = np.full(bsz, WEBSHOP_NUM_MILESTONES, dtype=np.int32)
 
     if milestone_achieved is None:
-        print("[MiGPO-WebShop Warning] milestone_achieved missing; all steps -> segment 0.")
+        print("[WiGPO-WebShop Warning] milestone_achieved missing; all steps -> segment 0.")
         return segment_ids, milestone_flags, num_milestones
 
     for uid in np.unique(traj_uids):

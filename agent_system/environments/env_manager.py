@@ -160,7 +160,7 @@ class AlfWorldEnvironmentManager(EnvironmentManagerBase):
         # add action_valid to infos
         for i, info in enumerate(infos):
             info['is_action_valid'] = to_numpy(valids[i])
-            # projected (lowercased) action, same format as milestone anchors (MiGPO)
+            # projected (lowercased) action, same format as milestone anchors (WiGPO)
             info['action'] = actions[i]
 
         next_observations = {'text': full_text_obs, 'image': image_obs, 'anchor': text_obs}
