@@ -1169,6 +1169,7 @@ class RayPPOTrainer:
                                 gamma=self.config.algorithm.gamma,
                                 beta=self.config.algorithm.gigpo.get('subtask_decay_beta', 0.5),
                                 r_max=self.config.algorithm.gigpo.get('subtask_reward_max', 10.0),
+                                reward_mode=self.config.algorithm.gigpo.get('subtask_reward_mode', 'cumulative'),
                             )
                             batch.batch['step_rewards'] = shaped
 
