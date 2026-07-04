@@ -73,6 +73,7 @@ python3 -m verl.trainer.main_ppo \
     algorithm.gigpo.subgroup_advantage_w=1.0 \
     algorithm.gigpo.mode=$mode \
     algorithm.gigpo.use_subtask_shaped_reward=True \
+    algorithm.gigpo.subtask_reward_mode=reverse_decay \
     algorithm.gigpo.subtask_decay_beta=0.5 \
     env.env_name=Webshop \
     env.seed=42 \
@@ -82,7 +83,7 @@ python3 -m verl.trainer.main_ppo \
     trainer.critic_warmup=0 \
     trainer.logger=['console','wandb'] \
     trainer.project_name='verl_agent_webshop' \
-    trainer.experiment_name='migpo_qwen2.5_1.5b' \
+    trainer.experiment_name='migpo_qwen2.5_1.5b-beacon' \
     trainer.n_gpus_per_node=2 \
     trainer.nnodes=1 \
     trainer.save_freq=-1 \

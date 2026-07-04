@@ -260,6 +260,7 @@ algorithm:
     use_subtask_shaped_reward: True # if False, MiGPO keeps GiGPO's discounted-return step_rewards
     subtask_reward_max: 10.0 # total task reward R_max, split equally over the task's milestones
     subtask_decay_beta: 0.5 # geometric decay beta^(j-s) for farther completed subtasks (0<beta<=1)
+    subtask_reward_mode: "cumulative" # "cumulative" (default) or "reverse_decay" (BEACON-style)
   filter_groups: # DAPO from https://arxiv.org/abs/2503.14476
     enable: False
     max_num_gen_batches: 10
