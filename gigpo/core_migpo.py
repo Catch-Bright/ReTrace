@@ -327,30 +327,41 @@ def compute_subtask_shaped_step_rewards(batch: DataProto,
                                         num_milestones: np.ndarray,
                                         gamma: float,
                                         beta: float,
-                                        r_max: float = 10.0) -> torch.Tensor:
+                                        r_max: float = 10.0,
+                                        reward_mode: str = 'cumulative') -> torch.Tensor:
     """
     Compute the MiGPO subtask-shaped per-step reward that *replaces* GiGPO's
     discounted-return ``step_rewards``.
 
-    The task reward ``r_max`` is split equally over the task's ``M`` milestones
-    (``r_sub = r_max / M``) and credited per *achieved* subtask. For a step at
-    local index ``i`` inside segment ``s`` of a trajectory that completed ``m``
-    subtasks (segments ``0..m-1`` are the completed ones, with per-segment end
-    index ``e_s`` = the step that achieved milestone ``s+1``):
+    Two reward modes are supported:
 
-        reward(i) = [s < m] * r_sub * gamma^(e_s - i)                     # own subtask, discounted to its phase end
+    **cumulative** (default): Credits own subtask + all later completed subtasks.
+        reward(i) = [s < m] * r_sub * gamma^(e_s - i)
                   + sum_{j=s+1}^{m-1} beta^(j-s) * r_sub * gamma^(L_j)
+        where r_sub = r_max / M, and each later subtask j contributes with
+        geometric distance decay beta^(j-s) and phase-length discount gamma^(L_j).
 
-    where ``L_k`` is the number of steps in segment ``k``. The later-subtask
-    discount uses **each subtask's own phase length** ``L_j``, NOT the cumulative
-    distance from the current step, so every step in a segment shares the same
-    future contribution; only the own-subtask term varies within a segment.
-    ``beta`` (< 1) makes farther subtasks contribute geometrically less.
+    **reverse_decay** (BEACON-style): Only credits own subtask with reverse-decay.
+        reward(i) = [s < m] * gamma^(e_s - i) * r_max
+        Each completed segment gets reverse-decay from its achieving step backward.
+        Simpler, no cross-segment accumulation, unified [0, r_max] scale.
 
-    IMPORTANT: call this while step order within each trajectory is intact
-    (before ``balance_batch`` reorders the batch); the returned tensor is aligned
-    to the current batch order.
+    Args:
+        batch: DataProto with traj_uid, step_idx in non_tensor_batch.
+        segment_ids: per-step segment id (int32).
+        milestone_flags: per-step milestone achievement flag (bool).
+        num_milestones: per-step total milestone count M (int32).
+        gamma: time discount factor.
+        beta: geometric distance decay for later subtasks (cumulative mode only).
+        r_max: max task reward (default 10.0, matches WebShop/ALFWorld).
+        reward_mode: 'cumulative' (default) or 'reverse_decay' (BEACON).
+
+    Returns:
+        step_rewards: torch.Tensor of shape (bsz,), aligned to batch order.
     """
+    if reward_mode not in ('cumulative', 'reverse_decay'):
+        raise ValueError(f"reward_mode must be 'cumulative' or 'reverse_decay', got {reward_mode}")
+
     ntb = batch.non_tensor_batch
     traj_uids = ntb["traj_uid"]
     step_idx = ntb.get("step_idx", None)
@@ -371,7 +382,6 @@ def compute_subtask_shaped_step_rewards(batch: DataProto,
         seg = np.array([int(segment_ids[p]) for p in ordered_pos])
         flag = np.array([bool(milestone_flags[p]) for p in ordered_pos])
         M = int(num_milestones[ordered_pos[0]]) if num_milestones[ordered_pos[0]] > 0 else 1
-        r_sub = r_max / M
 
         # Segment lengths L[k] and completion end index e[k] (local).
         seg_len: Dict[int, int] = defaultdict(int)
@@ -380,23 +390,35 @@ def compute_subtask_shaped_step_rewards(batch: DataProto,
         end_idx: Dict[int, int] = {}
         for i in range(T):
             if flag[i]:
-                end_idx[int(seg[i])] = i  # last True in a segment wins; there is exactly one
-        # m = number of completed subtasks; completed segment ids are {0..m-1}.
+                end_idx[int(seg[i])] = i
 
-        for i in range(T):
-            s = int(seg[i])
-            val = 0.0
-            # Own subtask term (only if this segment was completed).
-            if s in end_idx:
-                val += r_sub * (gamma ** (end_idx[s] - i))
-            # Later completed subtasks: contiguous s+1, s+2, ... while completed.
-            # Each later subtask j contributes beta^(j-s) * r_sub * gamma^(L_j).
-            j = s + 1
-            while j in end_idx:
-                L_j = seg_len.get(j, 0)
-                val += (beta ** (j - s)) * r_sub * (gamma ** L_j)
-                j += 1
-            step_rewards[ordered_pos[i]] = val
+        if reward_mode == 'reverse_decay':
+            # BEACON-style: each segment gets reverse-decay from achieving step
+            for i in range(T):
+                s = int(seg[i])
+                if s in end_idx:
+                    # Completed segment: reverse-decay from end
+                    step_rewards[ordered_pos[i]] = (gamma ** (end_idx[s] - i)) * r_max
+                else:
+                    # Incomplete segment: 0
+                    step_rewards[ordered_pos[i]] = 0.0
+
+        else:  # cumulative
+            r_sub = r_max / M
+            for i in range(T):
+                s = int(seg[i])
+                val = 0.0
+                # Own subtask term (only if this segment was completed).
+                if s in end_idx:
+                    val += r_sub * (gamma ** (end_idx[s] - i))
+                # Later completed subtasks: contiguous s+1, s+2, ... while completed.
+                # Each later subtask j contributes beta^(j-s) * r_sub * gamma^(L_j).
+                j = s + 1
+                while j in end_idx:
+                    L_j = seg_len.get(j, 0)
+                    val += (beta ** (j - s)) * r_sub * (gamma ** L_j)
+                    j += 1
+                step_rewards[ordered_pos[i]] = val
 
     return torch.tensor(step_rewards, dtype=torch.float32,
                         device=batch.batch['input_ids'].device)
