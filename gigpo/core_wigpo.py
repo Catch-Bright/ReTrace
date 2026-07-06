@@ -346,6 +346,28 @@ def compute_subtask_shaped_step_rewards(batch: DataProto,
         Each completed segment gets reverse-decay from its achieving step backward.
         Simpler, no cross-segment accumulation, unified [0, r_max] scale.
 
+    **reverse_decay_cumulative** (BEACON temporal extension): On top of the own
+        subtask's reverse-decay term, add the terminal reward of every *subsequent*
+        completed milestone, each discounted by the number of timesteps from THIS
+        segment's achieving step e_s to that later milestone's achieving step e_j:
+            reward(i) = [s completed] * gamma^(e_s - i) * r_max
+                      + sum_{j>s, j completed} gamma^(e_j - e_s) * r_max
+        The own term still decays with the step position i (as in ``reverse_decay``),
+        while each later-milestone bonus is constant within a segment (measured from
+        e_s), so every step in segment s is credited for the milestones it enables.
+
+    **reverse_decay_from_step** (per-step temporal extension): Same set of credited
+        milestones as ``reverse_decay_cumulative`` (own + every later completed one),
+        but EVERY milestone's discount is measured from THIS step i rather than from
+        the segment's achieving step e_s:
+            reward(i) = [s completed] * gamma^(e_s - i) * r_max
+                      + sum_{j>s, j completed} gamma^(e_j - i) * r_max
+        Equivalently, reward(i) = sum over each completed milestone k>=s of
+        gamma^(e_k - i) * r_max. Every reachable future milestone is discounted by
+        its own distance to step i, so a step is credited more for the milestones it
+        is temporally closer to. Unlike ``reverse_decay_cumulative``, the later-
+        milestone terms are NOT constant within a segment.
+
     Args:
         batch: DataProto with traj_uid, step_idx in non_tensor_batch.
         segment_ids: per-step segment id (int32).
@@ -354,13 +376,19 @@ def compute_subtask_shaped_step_rewards(batch: DataProto,
         gamma: time discount factor.
         beta: geometric distance decay for later subtasks (cumulative mode only).
         r_max: max task reward (default 10.0, matches WebShop/ALFWorld).
-        reward_mode: 'cumulative' (default) or 'reverse_decay' (BEACON).
+        reward_mode: 'cumulative' (default), 'reverse_decay' (BEACON),
+            'reverse_decay_cumulative' (BEACON temporal extension), or
+            'reverse_decay_from_step' (per-step temporal extension).
 
     Returns:
         step_rewards: torch.Tensor of shape (bsz,), aligned to batch order.
     """
-    if reward_mode not in ('cumulative', 'reverse_decay'):
-        raise ValueError(f"reward_mode must be 'cumulative' or 'reverse_decay', got {reward_mode}")
+    if reward_mode not in ('cumulative', 'reverse_decay',
+                           'reverse_decay_cumulative', 'reverse_decay_from_step'):
+        raise ValueError(
+            "reward_mode must be 'cumulative', 'reverse_decay', "
+            "'reverse_decay_cumulative', or 'reverse_decay_from_step', "
+            f"got {reward_mode}")
 
     ntb = batch.non_tensor_batch
     traj_uids = ntb["traj_uid"]
@@ -402,6 +430,41 @@ def compute_subtask_shaped_step_rewards(batch: DataProto,
                 else:
                     # Incomplete segment: 0
                     step_rewards[ordered_pos[i]] = 0.0
+
+        elif reward_mode == 'reverse_decay_cumulative':
+            # BEACON temporal extension: own-milestone reverse-decay term PLUS the
+            # terminal reward of every later completed milestone, each discounted by
+            # the timestep gap from THIS segment's achieving step e_s to that later
+            # milestone's achieving step e_j.
+            completed_segs = sorted(end_idx.keys())
+            for i in range(T):
+                s = int(seg[i])
+                val = 0.0
+                if s in end_idx:
+                    e_s = end_idx[s]
+                    # Own milestone: reverse-decay from its achieving step.
+                    val += (gamma ** (e_s - i)) * r_max
+                    # Later completed milestones: discount from e_s to e_j.
+                    for j in completed_segs:
+                        if j > s:
+                            e_j = end_idx[j]
+                            val += (gamma ** (e_j - e_s)) * r_max
+                step_rewards[ordered_pos[i]] = val
+
+        elif reward_mode == 'reverse_decay_from_step':
+            # Per-step temporal extension: own milestone + every later completed
+            # milestone, but EVERY discount is measured from THIS step i (not e_s).
+            # reward(i) = sum_{k>=s, k completed} gamma^(e_k - i) * r_max
+            completed_segs = sorted(end_idx.keys())
+            for i in range(T):
+                s = int(seg[i])
+                val = 0.0
+                # Sum over own milestone and all later completed milestones
+                for k in completed_segs:
+                    if k >= s:
+                        e_k = end_idx[k]
+                        val += (gamma ** (e_k - i)) * r_max
+                step_rewards[ordered_pos[i]] = val
 
         else:  # cumulative
             r_sub = r_max / M
