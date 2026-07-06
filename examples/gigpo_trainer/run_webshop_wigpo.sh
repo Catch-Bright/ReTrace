@@ -14,6 +14,19 @@ train_data_size=16
 val_data_size=128
 group_size=8
 mode="mean_norm" # "mean_norm" or "mean_std_norm"
+# Subtask-shaped step reward mode. Switch freely between:
+#   "reverse_decay"            : BEACON-style. Each step only gets its OWN milestone's
+#                                terminal reward, reverse-decayed: gamma^(e_s - i) * r_max.
+#   "reverse_decay_cumulative" : BEACON temporal extension. Own-milestone term PLUS,
+#                                for every later completed milestone j, an extra
+#                                gamma^(e_j - e_s) * r_max discounted by the timesteps
+#                                from segment s's achieving step e_s to milestone j's.
+#   "reverse_decay_from_step"  : Per-step temporal extension. Each step gets reward from
+#                                its OWN milestone + every LATER completed milestone, but
+#                                EVERY discount is measured from THIS step i:
+#                                gamma^(e_s - i) + sum_j gamma^(e_j - i).
+#   "cumulative"               : r_sub = r_max/M per subtask + geometric distance decay (beta).
+subtask_reward_mode="reverse_decay_from_step"
 model_path=/itdd-pfs/wangyuhao/model/qwen2.5_1_5b_instruct
 
 # WiGPO: segment-refined GiGPO for WebShop.
@@ -73,7 +86,7 @@ python3 -m verl.trainer.main_ppo \
     algorithm.gigpo.subgroup_advantage_w=1.0 \
     algorithm.gigpo.mode=$mode \
     algorithm.gigpo.use_subtask_shaped_reward=True \
-    algorithm.gigpo.subtask_reward_mode=reverse_decay \
+    algorithm.gigpo.subtask_reward_mode=$subtask_reward_mode \
     algorithm.gigpo.subtask_decay_beta=0.5 \
     env.env_name=Webshop \
     env.seed=42 \
@@ -83,7 +96,7 @@ python3 -m verl.trainer.main_ppo \
     trainer.critic_warmup=0 \
     trainer.logger=['console','wandb'] \
     trainer.project_name='verl_agent_webshop' \
-    trainer.experiment_name='wigpo_qwen2.5_1.5b-beacon' \
+    trainer.experiment_name='wigpo_qwen2.5_1.5b-rw3' \
     trainer.n_gpus_per_node=2 \
     trainer.nnodes=1 \
     trainer.save_freq=-1 \
