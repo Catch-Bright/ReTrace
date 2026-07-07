@@ -368,6 +368,21 @@ def compute_subtask_shaped_step_rewards(batch: DataProto,
         is temporally closer to. Unlike ``reverse_decay_cumulative``, the later-
         milestone terms are NOT constant within a segment.
 
+    **reverse_decay_cumulative_split** (milestone-split variant of cumulative):
+        Same logic as ``reverse_decay_cumulative``, but each milestone contributes
+        r_max/M instead of r_max (where M is the total number of milestones for this
+        task, e.g., WebShop M=4 → each milestone worth 2.5). Terminal reward r_max is
+        evenly split across M milestones:
+            reward(i) = [s completed] * gamma^(e_s - i) * (r_max/M)
+                      + sum_{j>s, j completed} gamma^(e_j - e_s) * (r_max/M)
+        Completing all M milestones gives max reward = r_max.
+
+    **reverse_decay_from_step_split** (milestone-split variant of from_step):
+        Same logic as ``reverse_decay_from_step``, but each milestone contributes
+        r_max/M instead of r_max:
+            reward(i) = sum_{k>=s, k completed} gamma^(e_k - i) * (r_max/M)
+        Completing all M milestones gives max reward = r_max.
+
     Args:
         batch: DataProto with traj_uid, step_idx in non_tensor_batch.
         segment_ids: per-step segment id (int32).
@@ -377,17 +392,21 @@ def compute_subtask_shaped_step_rewards(batch: DataProto,
         beta: geometric distance decay for later subtasks (cumulative mode only).
         r_max: max task reward (default 10.0, matches WebShop/ALFWorld).
         reward_mode: 'cumulative' (default), 'reverse_decay' (BEACON),
-            'reverse_decay_cumulative' (BEACON temporal extension), or
-            'reverse_decay_from_step' (per-step temporal extension).
+            'reverse_decay_cumulative' (BEACON temporal extension),
+            'reverse_decay_from_step' (per-step temporal extension),
+            'reverse_decay_cumulative_split' (cumulative with milestone-split reward),
+            or 'reverse_decay_from_step_split' (from_step with milestone-split reward).
 
     Returns:
         step_rewards: torch.Tensor of shape (bsz,), aligned to batch order.
     """
     if reward_mode not in ('cumulative', 'reverse_decay',
-                           'reverse_decay_cumulative', 'reverse_decay_from_step'):
+                           'reverse_decay_cumulative', 'reverse_decay_from_step',
+                           'reverse_decay_cumulative_split', 'reverse_decay_from_step_split'):
         raise ValueError(
             "reward_mode must be 'cumulative', 'reverse_decay', "
-            "'reverse_decay_cumulative', or 'reverse_decay_from_step', "
+            "'reverse_decay_cumulative', 'reverse_decay_from_step', "
+            "'reverse_decay_cumulative_split', or 'reverse_decay_from_step_split', "
             f"got {reward_mode}")
 
     ntb = batch.non_tensor_batch
@@ -464,6 +483,40 @@ def compute_subtask_shaped_step_rewards(batch: DataProto,
                     if k >= s:
                         e_k = end_idx[k]
                         val += (gamma ** (e_k - i)) * r_max
+                step_rewards[ordered_pos[i]] = val
+
+        elif reward_mode == 'reverse_decay_cumulative_split':
+            # Milestone-split variant of reverse_decay_cumulative.
+            # Each milestone contributes r_max/M instead of r_max.
+            r_per_milestone = r_max / M
+            completed_segs = sorted(end_idx.keys())
+            for i in range(T):
+                s = int(seg[i])
+                val = 0.0
+                if s in end_idx:
+                    e_s = end_idx[s]
+                    # Own milestone: reverse-decay from its achieving step.
+                    val += (gamma ** (e_s - i)) * r_per_milestone
+                    # Later completed milestones: discount from e_s to e_j.
+                    for j in completed_segs:
+                        if j > s:
+                            e_j = end_idx[j]
+                            val += (gamma ** (e_j - e_s)) * r_per_milestone
+                step_rewards[ordered_pos[i]] = val
+
+        elif reward_mode == 'reverse_decay_from_step_split':
+            # Milestone-split variant of reverse_decay_from_step.
+            # Each milestone contributes r_max/M instead of r_max.
+            r_per_milestone = r_max / M
+            completed_segs = sorted(end_idx.keys())
+            for i in range(T):
+                s = int(seg[i])
+                val = 0.0
+                # Sum over own milestone and all later completed milestones
+                for k in completed_segs:
+                    if k >= s:
+                        e_k = end_idx[k]
+                        val += (gamma ** (e_k - i)) * r_per_milestone
                 step_rewards[ordered_pos[i]] = val
 
         else:  # cumulative

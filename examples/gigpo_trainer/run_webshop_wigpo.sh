@@ -15,18 +15,27 @@ val_data_size=128
 group_size=8
 mode="mean_norm" # "mean_norm" or "mean_std_norm"
 # Subtask-shaped step reward mode. Switch freely between:
-#   "reverse_decay"            : BEACON-style. Each step only gets its OWN milestone's
-#                                terminal reward, reverse-decayed: gamma^(e_s - i) * r_max.
-#   "reverse_decay_cumulative" : BEACON temporal extension. Own-milestone term PLUS,
-#                                for every later completed milestone j, an extra
-#                                gamma^(e_j - e_s) * r_max discounted by the timesteps
-#                                from segment s's achieving step e_s to milestone j's.
-#   "reverse_decay_from_step"  : Per-step temporal extension. Each step gets reward from
-#                                its OWN milestone + every LATER completed milestone, but
-#                                EVERY discount is measured from THIS step i:
-#                                gamma^(e_s - i) + sum_j gamma^(e_j - i).
-#   "cumulative"               : r_sub = r_max/M per subtask + geometric distance decay (beta).
-subtask_reward_mode="reverse_decay_from_step"
+#   "reverse_decay"                  : BEACON-style. Each step only gets its OWN milestone's
+#                                      terminal reward, reverse-decayed: gamma^(e_s - i) * r_max.
+#   "reverse_decay_cumulative"       : BEACON temporal extension. Own-milestone term PLUS,
+#                                      for every later completed milestone j, an extra
+#                                      gamma^(e_j - e_s) * r_max discounted by the timesteps
+#                                      from segment s's achieving step e_s to milestone j's.
+#                                      Each milestone contributes r_max (e.g., 10).
+#   "reverse_decay_from_step"        : Per-step temporal extension. Each step gets reward from
+#                                      its OWN milestone + every LATER completed milestone, but
+#                                      EVERY discount is measured from THIS step i:
+#                                      gamma^(e_s - i) + sum_j gamma^(e_j - i).
+#                                      Each milestone contributes r_max (e.g., 10).
+#   "reverse_decay_cumulative_split" : Same logic as reverse_decay_cumulative, but each milestone
+#                                      contributes r_max/M (e.g., 10/4=2.5 for WebShop).
+#                                      Terminal reward r_max is evenly split across M milestones.
+#                                      Completing all M gives max reward = r_max.
+#   "reverse_decay_from_step_split"  : Same logic as reverse_decay_from_step, but each milestone
+#                                      contributes r_max/M (e.g., 10/4=2.5 for WebShop).
+#                                      Completing all M gives max reward = r_max.
+#   "cumulative"                     : r_sub = r_max/M per subtask + geometric distance decay (beta).
+subtask_reward_mode="reverse_decay_from_step_split"
 model_path=/itdd-pfs/wangyuhao/model/qwen2.5_1_5b_instruct
 
 # WiGPO: segment-refined GiGPO for WebShop.
@@ -70,7 +79,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=16 \
     actor_rollout_ref.rollout.tensor_model_parallel_size=2 \
     actor_rollout_ref.rollout.name=$ENGINE \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.65 \
     actor_rollout_ref.rollout.enable_chunked_prefill=False \
     actor_rollout_ref.rollout.enforce_eager=False \
     actor_rollout_ref.rollout.free_cache_engine=False \
@@ -85,7 +94,7 @@ python3 -m verl.trainer.main_ppo \
     algorithm.gigpo.step_advantage_w=0 \
     algorithm.gigpo.subgroup_advantage_w=1.0 \
     algorithm.gigpo.mode=$mode \
-    algorithm.gigpo.use_subtask_shaped_reward=True \
+    algorithm.gigpo.use_subtask_shaped_reward=False \
     algorithm.gigpo.subtask_reward_mode=$subtask_reward_mode \
     algorithm.gigpo.subtask_decay_beta=0.5 \
     env.env_name=Webshop \
@@ -96,8 +105,8 @@ python3 -m verl.trainer.main_ppo \
     trainer.critic_warmup=0 \
     trainer.logger=['console','wandb'] \
     trainer.project_name='verl_agent_webshop' \
-    trainer.experiment_name='wigpo_qwen2.5_1.5b-rw3' \
-    trainer.n_gpus_per_node=2 \
+    trainer.experiment_name='wigpo_qwen2.5_1.5b-finaldiscount' \
+    trainer.n_gpus_per_node=4 \
     trainer.nnodes=1 \
     trainer.save_freq=-1 \
     trainer.test_freq=5 \
