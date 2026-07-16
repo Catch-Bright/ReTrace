@@ -90,11 +90,11 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.use_invalid_action_penalty=True \
     actor_rollout_ref.actor.invalid_action_penalty_coef=0.1 \
     algorithm.use_kl_in_reward=False \
-    algorithm.gamma=0.95 \
+    algorithm.gamma=0.99 \
     algorithm.gigpo.step_advantage_w=0 \
     algorithm.gigpo.subgroup_advantage_w=1.0 \
     algorithm.gigpo.mode=$mode \
-    algorithm.gigpo.use_subtask_shaped_reward=False \
+    algorithm.gigpo.use_subtask_shaped_reward=True \
     algorithm.gigpo.subtask_reward_mode=$subtask_reward_mode \
     algorithm.gigpo.subtask_decay_beta=0.5 \
     env.env_name=Webshop \
@@ -105,7 +105,7 @@ python3 -m verl.trainer.main_ppo \
     trainer.critic_warmup=0 \
     trainer.logger=['console','wandb'] \
     trainer.project_name='verl_agent_webshop' \
-    trainer.experiment_name='wigpo_qwen2.5_1.5b-finaldiscount' \
+    trainer.experiment_name='wigpo_qwen2.5_1.5b-rw4' \
     trainer.n_gpus_per_node=4 \
     trainer.nnodes=1 \
     trainer.save_freq=-1 \
