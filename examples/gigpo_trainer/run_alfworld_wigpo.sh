@@ -13,6 +13,14 @@ train_data_size=16
 val_data_size=128
 group_size=8
 mode="mean_std_norm" # "mean_norm" or "mean_std_norm"
+# Within each subgroup (obs cluster n segment), average step rewards over identical
+# canonical actions so the same action from the same state/stage gets the same credit
+# (removes reward differences caused by *later* action choices). Invalid actions keep
+# their own reward: "both invalid" does not mean "the same action".
+# NOTE: with mode=mean_std_norm, averaging shrinks the within-subgroup std, so the
+# normalization denominator shrinks too and the subgroup advantage scale grows.
+# Tune subgroup_advantage_w if the gradient magnitude changes noticeably.
+action_group_agg=True
 # reverse_decay_from_step_split: Each step gets reward from its OWN milestone + every LATER
 # completed milestone, with discount measured from THIS step i: gamma^(e_s - i) + sum_j gamma^(e_j - i).
 # Each milestone contributes r_max/M. Completing all M gives max reward = r_max.
@@ -75,6 +83,7 @@ python3 -m verl.trainer.main_ppo \
     algorithm.gamma=0.95 \
     algorithm.gigpo.step_advantage_w=0 \
     algorithm.gigpo.subgroup_advantage_w=1.0 \
+    algorithm.gigpo.action_group_agg=$action_group_agg \
     algorithm.gigpo.milestone_threshold=0.95 \
     algorithm.gigpo.milestone_path=$milestone_path \
     algorithm.gigpo.mode=$mode \

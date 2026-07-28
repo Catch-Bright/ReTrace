@@ -38,6 +38,7 @@ to GiGPO.
 
 import json
 import os
+import re
 import uuid
 from collections import defaultdict
 from difflib import SequenceMatcher
@@ -620,6 +621,108 @@ def build_subgroup_uids(step_group_uids: np.ndarray,
 
 
 # ---------------------------------------------------------- #
+# --------------- Action-group aggregation ----------------- #
+# ---------------------------------------------------------- #
+
+# Sentinel key for actions the projection function rejected. Invalid actions are
+# never merged with valid ones, AND (unlike valid actions) they are never averaged
+# with each other: "both invalid" does not mean "the same action".
+INVALID_ACTION_KEY = "__INVALID__"
+
+_WS_RE = re.compile(r"\s+")
+
+
+def canonical_action_key(action: Optional[str], is_valid: bool = True) -> str:
+    """
+    Map a projected action string to a canonical grouping key.
+
+    The ``<action>...</action>`` body has already been extracted and lowercased by
+    the env projection function (see ``alfworld/projection.py``,
+    ``webshop/projection.py``), so this only removes residual surface variation:
+    case, surrounding/inner whitespace, and trailing punctuation.
+
+    Invalid actions map to ``INVALID_ACTION_KEY`` and are excluded from averaging.
+    """
+    if not is_valid or action is None:
+        return INVALID_ACTION_KEY
+    key = _WS_RE.sub(" ", str(action).strip().lower()).strip(" .,;")
+    return key if key else INVALID_ACTION_KEY
+
+
+def aggregate_action_group_rewards(step_rewards: torch.Tensor,
+                                   subgroup_uids: np.ndarray,
+                                   action_keys: np.ndarray,
+                                   summarize: bool = True) -> torch.Tensor:
+    """
+    Within each subgroup, average ``step_rewards`` over identical canonical actions.
+
+    Steps that share a subgroup (same obs cluster AND same segment) but took the
+    same action should receive the same credit: their reward differences come from
+    *later* action choices, not from the action being evaluated. Replacing each
+    step's reward with its action bucket's mean removes that downstream noise, and
+    is the Q-hat(s, a) estimate that the subsequent within-subgroup normalization
+    turns into Q-hat(s, a) - V-hat(s).
+
+    Invalid actions (``INVALID_ACTION_KEY``) keep their own original reward; they
+    still participate in the subgroup baseline computed downstream.
+
+    Args:
+        step_rewards: shape (bsz,)
+        subgroup_uids: shape (bsz,), from ``build_subgroup_uids``
+        action_keys: shape (bsz,), from ``canonical_action_key``
+        summarize: print grouping diagnostics
+
+    Returns:
+        A new tensor of shape (bsz,); ``step_rewards`` is left untouched.
+    """
+    out = step_rewards.clone()
+
+    with torch.no_grad():
+        bucket_to_idx: Dict[tuple, List[int]] = defaultdict(list)
+        for i in range(len(subgroup_uids)):
+            key = action_keys[i]
+            if key == INVALID_ACTION_KEY:
+                continue  # keep original reward, never averaged
+            bucket_to_idx[(subgroup_uids[i], key)].append(i)
+
+        n_aggregated = 0
+        for idx in bucket_to_idx.values():
+            if len(idx) < 2:
+                continue  # singleton bucket: mean == original value
+            mean_r = out[idx].mean()
+            out[idx] = mean_r
+            n_aggregated += len(idx)
+
+    if summarize:
+        subgroup_keys: Dict[str, set] = defaultdict(set)
+        subgroup_sizes: Dict[str, int] = defaultdict(int)
+        for i in range(len(subgroup_uids)):
+            subgroup_sizes[subgroup_uids[i]] += 1
+            subgroup_keys[subgroup_uids[i]].add(action_keys[i])
+
+        bsz = len(subgroup_uids)
+        n_invalid = int(sum(1 for k in action_keys if k == INVALID_ACTION_KEY))
+        multi_member = [u for u, s in subgroup_sizes.items() if s > 1]
+        distinct_counts = [len(subgroup_keys[u]) for u in multi_member]
+
+        print(f"\n[WiGPO Action-Group Statistics]")
+        print(f"  Subgroups: {len(subgroup_sizes)} "
+              f"({len(multi_member)} multi-member)")
+        if distinct_counts:
+            print(f"  Distinct action keys per multi-member subgroup: "
+                  f"avg {np.mean(distinct_counts):.2f}, "
+                  f"min {min(distinct_counts)}, max {max(distinct_counts)}")
+            print(f"  Multi-member subgroups with only 1 action key: "
+                  f"{sum(1 for c in distinct_counts if c == 1)} / {len(distinct_counts)}")
+        print(f"  Steps whose reward was averaged: {n_aggregated} / {bsz} "
+              f"({100.0 * n_aggregated / max(bsz, 1):.1f}%)")
+        print(f"  Invalid actions (kept unaveraged): {n_invalid} / {bsz} "
+              f"({100.0 * n_invalid / max(bsz, 1):.1f}%)")
+
+    return out
+
+
+# ---------------------------------------------------------- #
 # --------------- WiGPO advantage -------------------------- #
 # ---------------------------------------------------------- #
 
@@ -636,6 +739,7 @@ def compute_wigpo_outcome_advantage(token_level_rewards: torch.Tensor,
                                     mode: str = "mean_norm",
                                     enable_similarity: bool = False,
                                     similarity_thresh: float = 0.95,
+                                    action_keys: np.ndarray = None,
                                     ):
     """
     Compute WiGPO advantages: GiGPO refined by subtask-segment subgroups.
@@ -645,6 +749,12 @@ def compute_wigpo_outcome_advantage(token_level_rewards: torch.Tensor,
               + subgroup_advantage_w * subgroup_adv      (obs-cluster n segment)
 
     With ``subgroup_advantage_w == 0`` this is identical to GiGPO.
+
+    When ``action_keys`` is given, the subgroup term first averages step rewards
+    over identical canonical actions inside each subgroup (see
+    ``aggregate_action_group_rewards``), so that the same action taken from the
+    same state/segment receives the same credit. The obs-cluster ``step_adv``
+    term always uses the raw, unaggregated step rewards.
     """
     if mode == "mean_std_norm":
         remove_std = False
@@ -671,9 +781,19 @@ def compute_wigpo_outcome_advantage(token_level_rewards: torch.Tensor,
     # 4. WiGPO subgroup = obs-cluster n segment.
     subgroup_uids = build_subgroup_uids(step_group_uids, segment_ids, summarize=True)
 
-    # 5. Subgroup-level advantage: normalize the SAME step_rewards, finer groups.
+    # 4b. Within each subgroup, average rewards over identical canonical actions.
+    if action_keys is not None:
+        subgroup_step_rewards = aggregate_action_group_rewards(
+            step_rewards, subgroup_uids, action_keys, summarize=True
+        )
+    else:
+        subgroup_step_rewards = step_rewards
+
+    # 5. Subgroup-level advantage: normalize the (action-aggregated) step rewards
+    #    over the finer subgroups. The subtracted baseline is still the mean over
+    #    all steps in the subgroup.
     subgroup_advantages = core_gigpo.step_norm_reward(
-        step_rewards, response_mask, subgroup_uids, epsilon, remove_std
+        subgroup_step_rewards, response_mask, subgroup_uids, epsilon, remove_std
     )
 
     # 6. Joint advantage.

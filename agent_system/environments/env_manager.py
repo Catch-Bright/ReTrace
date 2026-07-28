@@ -419,6 +419,8 @@ class WebshopEnvironmentManager(EnvironmentManagerBase):
         # add action_valid to infos
         for i, info in enumerate(infos):
             info['is_action_valid'] = to_numpy(valids[i])
+            # projected action body (WiGPO action-group aggregation)
+            info['action'] = actions[i]
 
         rewards = to_numpy(rewards)
         dones = to_numpy(dones)

@@ -243,7 +243,7 @@ def compute_response_mask(data: DataProto):
     return attention_mask[:, -response_length:]
 
 
-def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_repeat=1, multi_turn=False, norm_adv_by_std_in_grpo=True, step_advantage_w=1.0, gigpo_mode="mean_std_norm", gigpo_enable_similarity=False, gigpo_similarity_thresh=0.95, subgroup_advantage_w=1.0, milestone_threshold=0.85, milestone_path=None, **kwargs):
+def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_repeat=1, multi_turn=False, norm_adv_by_std_in_grpo=True, step_advantage_w=1.0, gigpo_mode="mean_std_norm", gigpo_enable_similarity=False, gigpo_similarity_thresh=0.95, subgroup_advantage_w=1.0, milestone_threshold=0.85, milestone_path=None, action_group_agg=False, **kwargs):
     """Compute advantage estimates for policy optimization.
 
     This function computes advantage estimates using various estimators like GAE, GRPO, REINFORCE++, etc.
@@ -360,6 +360,21 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
         data.batch['advantages'] = advantages
         data.batch['returns'] = returns
     elif adv_estimator == AdvantageEstimator.WiGPO:
+        # Canonical action keys for within-subgroup action-group averaging.
+        action_keys = None
+        if action_group_agg:
+            raw_actions = data.non_tensor_batch.get('actions', None)
+            if raw_actions is None:
+                print("[WiGPO Warning] action_group_agg=True but 'actions' is missing "
+                      "from non_tensor_batch; skipping action-group aggregation.")
+            else:
+                valids = data.non_tensor_batch.get('is_action_valid', None)
+                action_keys = np.array([
+                    core_wigpo.canonical_action_key(
+                        raw_actions[i], True if valids is None else bool(valids[i]))
+                    for i in range(len(raw_actions))
+                ], dtype=object)
+
         advantages, returns = core_wigpo.compute_wigpo_outcome_advantage(
             token_level_rewards=data.batch['token_level_rewards'], # for episode group reward computing
             step_rewards=data.batch['step_rewards'], # for step / subgroup reward computing
@@ -373,6 +388,7 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
             mode=gigpo_mode,
             enable_similarity=gigpo_enable_similarity,
             similarity_thresh=gigpo_similarity_thresh,
+            action_keys=action_keys,
             )
         data.batch['advantages'] = advantages
         data.batch['returns'] = returns
@@ -1294,6 +1310,7 @@ class RayPPOTrainer:
                             subgroup_advantage_w=self.config.algorithm.gigpo.get('subgroup_advantage_w', 1.0),
                             milestone_threshold=self.config.algorithm.gigpo.get('milestone_threshold', 0.85),
                             milestone_path=self.config.algorithm.gigpo.get('milestone_path', None),
+                            action_group_agg=self.config.algorithm.gigpo.get('action_group_agg', False),
                         )
 
                     # update critic

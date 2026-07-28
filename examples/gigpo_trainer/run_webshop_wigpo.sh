@@ -14,6 +14,11 @@ train_data_size=16
 val_data_size=128
 group_size=8
 mode="mean_norm" # "mean_norm" or "mean_std_norm"
+# Within each subgroup (obs cluster n segment), average step rewards over identical
+# canonical actions so the same action from the same state/stage gets the same credit
+# (removes reward differences caused by *later* action choices). Invalid actions keep
+# their own reward: "both invalid" does not mean "the same action".
+action_group_agg=True
 # Subtask-shaped step reward mode. Switch freely between:
 #   "reverse_decay"                  : BEACON-style. Each step only gets its OWN milestone's
 #                                      terminal reward, reverse-decayed: gamma^(e_s - i) * r_max.
@@ -93,6 +98,7 @@ python3 -m verl.trainer.main_ppo \
     algorithm.gamma=0.99 \
     algorithm.gigpo.step_advantage_w=0 \
     algorithm.gigpo.subgroup_advantage_w=1.0 \
+    algorithm.gigpo.action_group_agg=$action_group_agg \
     algorithm.gigpo.mode=$mode \
     algorithm.gigpo.use_subtask_shaped_reward=True \
     algorithm.gigpo.subtask_reward_mode=$subtask_reward_mode \
@@ -105,10 +111,10 @@ python3 -m verl.trainer.main_ppo \
     trainer.critic_warmup=0 \
     trainer.logger=['console','wandb'] \
     trainer.project_name='verl_agent_webshop' \
-    trainer.experiment_name='wigpo_qwen2.5_1.5b-rw4' \
+    trainer.experiment_name='wigpo_qwen2.5_1.5b-rw4-actgroup' \
     trainer.n_gpus_per_node=4 \
     trainer.nnodes=1 \
     trainer.save_freq=-1 \
     trainer.test_freq=5 \
-    trainer.total_epochs=150 \
+    trainer.total_epochs=170 \
     trainer.val_before_train=True $@
