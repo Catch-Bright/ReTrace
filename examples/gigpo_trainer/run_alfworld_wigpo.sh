@@ -1,9 +1,9 @@
 set -x
 ENGINE=${1:-vllm}
 export VLLM_ATTENTION_BACKEND=FLASH_ATTN
-export ALFWORLD_DATA=/itdd-pfs/wangyuhao/data/alfworld
-export HF_HOME=/itdd-pfs/wangyuhao/hf_cache
-export HF_DATASETS_CACHE=/itdd-pfs/wangyuhao/hf_cache/datasets
+export ALFWORLD_DATA=/root/.cache/alfworld
+export HF_HOME=/var/gfs/wangyuhao/hf_cache
+export HF_DATASETS_CACHE=/var/gfs/wangyuhao/hf_cache/datasets
 export HF_HUB_OFFLINE=1
 export HF_DATASETS_OFFLINE=1
 
@@ -39,7 +39,7 @@ prob_reweight_clip_max=1.5  # max value for rho_i scaling factor
 # completed milestone, with discount measured from THIS step i: gamma^(e_s - i) + sum_j gamma^(e_j - i).
 # Each milestone contributes r_max/M. Completing all M gives max reward = r_max.
 subtask_reward_mode="reverse_decay_from_step_split"
-model_path=/itdd-pfs/wangyuhao/model/qwen2.5_1_5b_instruct
+model_path=/var/gfs/wangyuhao/model/qwen2.5_1_5b_instruct
 
 # WiGPO: segment-refined GiGPO for ALFWorld.
 #
@@ -125,7 +125,7 @@ python3 -m verl.trainer.main_ppo \
     trainer.logger=['console','wandb'] \
     trainer.project_name='verl_agent_alfworld' \
     trainer.experiment_name='wigpo_qwen2.5_1.5b-rw4' \
-    trainer.n_gpus_per_node=4 \
+    trainer.n_gpus_per_node=8 \
     trainer.nnodes=1 \
     trainer.save_freq=-1 \
     trainer.test_freq=5 \

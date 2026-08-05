@@ -3,8 +3,8 @@ set -x
 ENGINE=${1:-vllm}
 ulimit -u 65536
 export VLLM_ATTENTION_BACKEND=FLASH_ATTN
-export HF_HOME=/itdd-pfs/wangyuhao/hf_cache
-export HF_DATASETS_CACHE=/itdd-pfs/wangyuhao/hf_cache/datasets
+export HF_HOME=/var/gfs/wangyuhao/hf_cache
+export HF_DATASETS_CACHE=/var/gfs/wangyuhao/hf_cache/datasets
 export HF_HUB_OFFLINE=1
 export HF_DATASETS_OFFLINE=1
 
@@ -55,7 +55,7 @@ prob_reweight_clip_max=  # max value for rho_i scaling factor
 #                                      Completing all M gives max reward = r_max.
 #   "cumulative"                     : r_sub = r_max/M per subtask + geometric distance decay (beta).
 subtask_reward_mode="reverse_decay_from_step_split"
-model_path=/itdd-pfs/wangyuhao/model/qwen2.5_1_5b_instruct
+model_path=/var/gfs/wangyuhao/model/qwen2.5_1_5b_instruct
 
 # WiGPO: segment-refined GiGPO for WebShop.
 # Unlike ALFWorld (static action anchor matching), WebShop uses dynamic milestone detection:
@@ -129,7 +129,7 @@ python3 -m verl.trainer.main_ppo \
     trainer.logger=['console','wandb'] \
     trainer.project_name='verl_agent_webshop' \
     trainer.experiment_name='wigpo_qwen2.5_1.5b-rw4-actgrewight' \
-    trainer.n_gpus_per_node=2 \
+    trainer.n_gpus_per_node=8 \
     trainer.nnodes=1 \
     trainer.save_freq=-1 \
     trainer.test_freq=5 \
