@@ -242,7 +242,7 @@ class AlfredTWEnv(object):
 
         return trajectory
 
-    def init_env(self, batch_size):
+    def init_env(self, batch_size, request_facts=False):
         domain_randomization = self.config["env"]["domain_randomization"]
         if self.train_eval != "train":
             domain_randomization = False
@@ -250,8 +250,16 @@ class AlfredTWEnv(object):
         alfred_demangler = AlfredDemangler(shuffle=domain_randomization)
         wrappers = [alfred_demangler, AlfredInfos]
 
-        # Register a new Gym environment.
-        request_infos = textworld.EnvInfos(won=True, admissible_commands=True, extras=["gamefile"])
+        # Register a new Gym environment. When the WiGPO milestone detector is
+        # enabled we also request the TextWorld facts (holds / inReceptacle /
+        # isHot / isClean / isCool / isToggled / ...) so the detector can read
+        # the true world state instead of parsing feedback text.
+        request_infos = textworld.EnvInfos(
+            won=True,
+            admissible_commands=True,
+            facts=request_facts,
+            extras=["gamefile"],
+        )
         expert_type = self.config["env"]["expert_type"]
         training_method = self.config["general"]["training_method"]
 

@@ -316,6 +316,12 @@ env:
     n: 1 # the group number of envs (for GRPO and GiGPO).
   alfworld:
     eval_dataset: eval_in_distribution
+    # WiGPO facts-based milestone detector. When True, the TextWorld facts
+    # (holds / inReceptacle / isHot / ...) are requested and per-step milestones
+    # are detected in the env worker (per-trajectory M). When False (default),
+    # the legacy static alfworld_milestones.json + similarity matching is used.
+    use_milestone_detector: False
+    milestone_log_dir: null # optional debug log dir for the milestone detector; null -> logs/alfworld_milestone_debug
   search:
     log_requests: false
     search_url: "http://127.0.0.1:8000/retrieve" # also support multiple urls: ["http://127.0.0.1:8000/retrieve", "http://127.0.0.1:8001/retrieve"]

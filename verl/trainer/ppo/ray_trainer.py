@@ -1188,12 +1188,13 @@ class RayPPOTrainer:
                         # Compute subtask segment metadata while step order within each
                         # trajectory is still intact (before balance_batch reorders).
                         if 'milestone_achieved' in batch.non_tensor_batch:
-                            # WebShop: milestones were detected inside the env worker
-                            # during rollout; derive segments from those flags. No
-                            # product catalog is (re)loaded in this process.
-                            from gigpo.core_wigpo_webshop import compute_batch_segment_meta_webshop
+                            # Dynamic event-driven milestones: detected inside the
+                            # env worker during rollout (WebShop AND ALFWorld, when
+                            # the fact-based detector is enabled). Derive segments
+                            # from the per-step flags; M is read per trajectory.
+                            from gigpo.core_wigpo_webshop import compute_batch_segment_meta_dynamic
                             segment_ids, milestone_flags, num_milestones = \
-                                compute_batch_segment_meta_webshop(batch=batch)
+                                compute_batch_segment_meta_dynamic(batch=batch)
                         else:
                             # ALFWorld or other: static action anchor matching.
                             segment_ids, milestone_flags, num_milestones = \

@@ -41,10 +41,19 @@ prob_reweight_clip_max=1.5  # max value for rho_i scaling factor
 subtask_reward_mode="reverse_decay_from_step_split"
 model_path=/itdd-pfs/wangyuhao/model/qwen2.5_1_5b_instruct
 
-# WiGPO: segment-refined GiGPO. Anchors JSON ships inside the gigpo package;
-# override with milestone_path=... if you keep it elsewhere.
-# Note: `gigpo` has no __init__.py (namespace package), so it has no
-# top-level __file__; resolve the path via the core_wigpo submodule instead.
+# WiGPO: segment-refined GiGPO for ALFWorld.
+#
+# Two milestone-detection paths are supported (chosen via env.alfworld.use_milestone_detector):
+#   - True  (below) -> facts-based state machine. Each env worker requests the
+#                      TextWorld facts (holds / inReceptacle / isHot / ...) and
+#                      detects per-task milestones (M differs by task type) with
+#                      no external milestone file. Segments are derived from the
+#                      per-step milestone_achieved flags in the trainer.
+#   - False         -> legacy static action-anchor matching against
+#                      alfworld_milestones.json (kept for repro experiments).
+#
+# The milestone_path below is only consumed by the legacy path; it is harmless
+# (and kept) when the facts-based detector is enabled.
 milestone_path=$(python3 -c "import os, gigpo.core_wigpo as m; print(os.path.join(os.path.dirname(os.path.abspath(m.__file__)), 'alfworld_milestones.json'))")
 if [ ! -f "$milestone_path" ]; then
     echo "ERROR: could not resolve milestone_path (got: '$milestone_path')" >&2
@@ -109,6 +118,7 @@ python3 -m verl.trainer.main_ppo \
     env.env_name=alfworld/AlfredTWEnv \
     env.seed=0 \
     env.max_steps=50 \
+    env.alfworld.use_milestone_detector=True \
     env.rollout.n=$group_size \
     env.resources_per_worker.num_cpus=$num_cpus_per_env_worker \
     trainer.critic_warmup=0 \

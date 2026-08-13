@@ -386,14 +386,21 @@ class TrajectoryCollector:
                     [gamefile_to_trial_id(info.get('extra.gamefile', None)) for info in infos], dtype=object)
             batch.non_tensor_batch['step_idx'] = np.full(batch_size, _step, dtype=np.int64)
 
-            # WiGPO-WebShop: the env worker already computed the milestone phase for
-            # this step (using its in-memory catalog). Just collect the two lightweight
-            # scalar fields; segments are derived from milestone_achieved downstream.
+            # WiGPO: the env worker already computed the milestone phase for this
+            # step (WebShop catalog-consistency detector, or ALFWorld facts-based
+            # detector). Collect the lightweight scalar fields; segments are derived
+            # from milestone_achieved (plus per-trajectory num_milestones) downstream.
             if 'milestone_achieved' in infos[0]:
                 batch.non_tensor_batch['milestone_achieved'] = np.array(
                     [bool(info.get('milestone_achieved', False)) for info in infos], dtype=bool)
-                batch.non_tensor_batch['milestone_phase'] = np.array(
-                    [int(info.get('milestone_phase', 0)) for info in infos], dtype=np.int64)
+                if 'milestone_phase' in infos[0]:
+                    batch.non_tensor_batch['milestone_phase'] = np.array(
+                        [int(info.get('milestone_phase', 0)) for info in infos], dtype=np.int64)
+                # Per-trajectory milestone count M (ALFWorld task types differ).
+                # Fall back to 4 (WebShop) when the worker does not supply it.
+                if 'num_milestones' in infos[0]:
+                    batch.non_tensor_batch['num_milestones'] = np.array(
+                        [int(info.get('num_milestones', 4)) for info in infos], dtype=np.int32)
 
             if 'tool_calling' in infos[0]:
                 tool_callings[active_masks] += np.array([info['tool_calling'] for info in infos], dtype=np.float32)[active_masks]

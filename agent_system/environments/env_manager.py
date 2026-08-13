@@ -640,8 +640,15 @@ def make_envs(config):
         else:
             raise ValueError(f"Unsupported environment: {config.env.env_name}")
 
+        # WiGPO: optional facts-based milestone detector. Reads the toggle from
+        # config.env.alfworld.use_milestone_detector (must be present in the yaml).
+        use_milestone_detector = bool(config.env.alfworld.get('use_milestone_detector', False))
         env_kwargs = {
             'eval_dataset': config.env.alfworld.eval_dataset, # 'eval_in_distribution' or 'eval_out_of_distribution'
+            'milestone_config': {
+                'use_milestone_detector': use_milestone_detector,
+                'milestone_log_dir': config.env.alfworld.get('milestone_log_dir', None),
+            },
         }
         _envs = build_alfworld_envs(alf_config_path, config.env.seed, config.data.train_batch_size, group_n, is_train=True, env_kwargs=env_kwargs, resources_per_worker=resources_per_worker)
         _val_envs = build_alfworld_envs(alf_config_path, config.env.seed + 1000, config.data.val_batch_size, 1, is_train=False, env_kwargs=env_kwargs, resources_per_worker=resources_per_worker)
