@@ -276,6 +276,8 @@ class AlfworldMilestoneDetector:
         self.step_count = 0
         self.history: List[MilestoneResult] = []
         self.action_history: List[Dict[str, Any]] = []
+        self.pick_two_first_id: Optional[str] = None
+        self.pick_two_second_id: Optional[str] = None
 
     # -----------------------------------------------------------------------
     # Public API
@@ -380,21 +382,32 @@ class AlfworldMilestoneDetector:
     # -----------------------------------------------------------------------
     def _advance_pick_two(self, facts: List[List[str]]) -> MilestoneResult:
         held = self._held_goal_instances(facts)
-        placed_ids = self._goal_in_parent_ids(facts)
-        unique_placed = set(placed_ids)
-        # goal instances held that are NOT among those already placed
-        other_held = held - unique_placed
+        placed_ids = set(self._goal_in_parent_ids(facts))
 
-        if self.completed_count == 0 and other_held:
+        if self.completed_count == 0 and held:
+            # Latch the concrete instance that satisfied the first TAKE.
+            self.pick_two_first_id = sorted(held)[0]
             return MilestoneResult(phase=MilestonePhase.TAKE, achieved=True,
                                    message="pick_two: 获得物体1")
-        if self.completed_count == 1 and len(unique_placed) >= 1:
+        if (self.completed_count == 1
+                and self.pick_two_first_id is not None
+                and self.pick_two_first_id in placed_ids):
             return MilestoneResult(phase=MilestonePhase.PLACE, achieved=True,
                                    message="pick_two: 放置物体1")
-        if self.completed_count == 2 and other_held:
-            return MilestoneResult(phase=MilestonePhase.TAKE, achieved=True,
-                                   message="pick_two: 获得物体2(不同实例)")
-        if self.completed_count == 3 and len(unique_placed) >= 2:
+        if (self.completed_count == 2
+                and self.pick_two_first_id is not None):
+            # The second TAKE must be a currently held instance distinct from
+            # the latched first instance. Re-taking the first object is ignored.
+            candidates = held - {self.pick_two_first_id}
+            if candidates:
+                self.pick_two_second_id = sorted(candidates)[0]
+                return MilestoneResult(phase=MilestonePhase.TAKE, achieved=True,
+                                       message="pick_two: 获得物体2(不同实例)")
+        if (self.completed_count == 3
+                and self.pick_two_first_id is not None
+                and self.pick_two_second_id is not None
+                and self.pick_two_first_id in placed_ids
+                and self.pick_two_second_id in placed_ids):
             return MilestoneResult(phase=MilestonePhase.PLACE, achieved=True,
                                    message="pick_two: 放置物体2")
         return MilestoneResult(phase=self.phase, achieved=False, message="进行中")

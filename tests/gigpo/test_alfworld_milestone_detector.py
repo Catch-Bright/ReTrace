@@ -345,10 +345,41 @@ def test_pick_two_requires_distinct_instances():
               "inreceptacle remotecontrol|0|1 armchair|0|1"]
     det.process(placed, False)
     # take attempt on the SAME instance, then place it again
-    det.process(["objecttype remotecontrol|0|1 remotecontrol", "holds agent1 remotecontrol|0|1"], False)
+    retake = det.process(
+        ["objecttype remotecontrol|0|1 remotecontrol", "holds agent1 remotecontrol|0|1"], False)
+    assert not retake.achieved
+    assert det.completed_count == 2
     r = det.process(placed, False)
-    assert det.completed_count < 4
+    assert det.completed_count == 2
     assert not r.achieved
+
+
+def test_pick_two_final_requires_both_latched_instances():
+    det = AlfworldMilestoneDetector(
+        "pick_two_obj_and_place",
+        {"object_target": "watch", "parent_target": "shelf"},
+        log_dir=None,
+    )
+    types = ["objecttype watch|0|1 watch", "objecttype watch|0|2 watch"]
+    det.process(types + ["holds agent1 watch|0|1"], False)
+    det.process(types + ["inreceptacle watch|0|1 shelf|0|1"], False)
+
+    # The second instance is B; A is still placed in the target container.
+    r = det.process(types + [
+        "holds agent1 watch|0|2",
+        "inreceptacle watch|0|1 shelf|0|1",
+    ], False)
+    assert r.achieved and det.completed_count == 3
+
+    # Placing only B is insufficient: the latched first instance A is absent.
+    r = det.process(types + ["inreceptacle watch|0|2 shelf|0|1"], False)
+    assert not r.achieved and det.completed_count == 3
+
+    r = det.process(types + [
+        "inreceptacle watch|0|1 shelf|0|1",
+        "inreceptacle watch|0|2 shelf|0|1",
+    ], False)
+    assert r.achieved and det.completed_count == 4
 
 
 def test_pick_two_distinct_instances_completes():
