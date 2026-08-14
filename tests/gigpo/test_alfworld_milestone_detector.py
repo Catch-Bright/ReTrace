@@ -421,24 +421,116 @@ def test_irrelevant_actions_do_not_advance():
     assert not r2.achieved and det.completed_count == 0
 
 
-def test_won_is_authoritative():
+def test_won_without_expected_facts_does_not_advance():
     det = AlfworldMilestoneDetector(
         "pick_and_place_simple",
         {"object_target": "apple", "parent_target": "fridge"},
         log_dir=None,
     )
-    det.process(["objecttype apple|0|1 apple"], won=False)  # nothing yet
+    det.process(["objecttype apple|0|1 apple"], won=False)
+    assert det.completed_count == 0
     r = det.process(["objecttype apple|0|1 apple"], won=True)
-    assert r.phase == MilestonePhase.COMPLETE
-    # and the detector is now closed.
-    det2 = AlfworldMilestoneDetector(
-        "pick_and_place_simple",
-        {"object_target": "apple", "parent_target": "fridge"},
+    assert not r.achieved
+    assert det.completed_count == 0
+    # `won` also must not close the facts-based detector.
+    r2 = det.process(["objecttype apple|0|1 apple", "holds agent1 apple|0|1"], won=False)
+    assert r2.achieved
+    assert det.completed_count == 1
+
+
+def test_won_on_transform_step_does_not_credit_final_placement():
+    det = AlfworldMilestoneDetector(
+        "pick_clean_then_place_in_recep",
+        {"object_target": "mug", "parent_target": "coffeemachine"},
         log_dir=None,
     )
-    det2.process(["objecttype apple|0|1 apple"], won=True)
-    det2.process(["objecttype apple|0|1 apple"], won=False)  # after won, no re-fire
-    assert det2.completed_count == 0
+    det.process(["objecttype mug|0|2 mug", "holds agent1 mug|0|2"], won=False)
+    assert det.completed_count == 1
+    transformed = det.process(["objecttype mug|0|2 mug", "isclean mug|0|2"], won=True)
+    assert transformed.achieved and transformed.phase == MilestonePhase.TRANSFORM
+    assert det.completed_count == 2
+
+    placed = det.process([
+        "objecttype mug|0|2 mug",
+        "isclean mug|0|2",
+        "inreceptacle mug|0|2 coffeemachine|0|1",
+    ], won=False)
+    assert placed.achieved and placed.phase == MilestonePhase.PLACE
+    assert det.completed_count == 3
+
+
+# ---------------------------------------------------------------------------
+# Real TextWorld fact-format tests
+#
+# ALFWorld demangles entity names before emitting facts, so real facts look like
+#   Proposition('inreceptacle', (Variable('bread 3'), Variable('diningtable 1')))
+#   Proposition('objecttype',   (Variable('mug 2'),   Variable('mugtype ')))
+# i.e. instance names contain a SPACE and type values carry a 'type' suffix.
+# These tests lock that format in (verified against a live AlfredTWEnv).
+# ---------------------------------------------------------------------------
+
+class _FakeVar:
+    def __init__(self, name):
+        self.name = name
+
+    def __str__(self):
+        return self.name
+
+
+class _FakeProp:
+    """Mimics textworld.logic.Proposition (.name + .names)."""
+
+    def __init__(self, name, *names):
+        self.name = name
+        self.names = tuple(names)
+
+
+def test_entity_class_parsing():
+    from gigpo.alfworld_milestone_detector import _entity_class
+    assert _entity_class("bread 3") == "bread"
+    assert _entity_class("mugtype ") == "mug"
+    assert _entity_class("diningtable 1") == "diningtable"
+    assert _entity_class("potato|0|1") == "potato"          # mangled form
+    assert _entity_class("stoveburnertype ") == "stoveburner"
+
+
+def test_real_fact_format_end_to_end():
+    """Demangled, space-containing names must drive the state machine."""
+    det = AlfworldMilestoneDetector(
+        "pick_cool_then_place_in_recep",
+        {"object_target": "Pan", "parent_target": "StoveBurner"},
+        log_dir=None,
+    )
+    types = [
+        _FakeProp("objecttype", "pan 2", "pantype "),
+        _FakeProp("receptacletype", "stoveburner 3", "stoveburnertype "),
+    ]
+    # take pan 2
+    r = det.process(types + [_FakeProp("holds", "agent1", "pan 2")], won=False)
+    assert r.achieved and det.completed_count == 1
+    # cool pan 2
+    r = det.process(types + [_FakeProp("holds", "agent1", "pan 2"),
+                             _FakeProp("iscool", "pan 2")], won=False)
+    assert r.achieved and det.completed_count == 2
+    # move pan 2 to stoveburner 3
+    r = det.process(types + [_FakeProp("iscool", "pan 2"),
+                             _FakeProp("inreceptacle", "pan 2", "stoveburner 3")], won=False)
+    assert r.achieved and det.completed_count == 3
+
+
+def test_real_fact_format_wrong_receptacle_does_not_complete():
+    det = AlfworldMilestoneDetector(
+        "pick_cool_then_place_in_recep",
+        {"object_target": "Pan", "parent_target": "StoveBurner"},
+        log_dir=None,
+    )
+    types = [_FakeProp("objecttype", "pan 2", "pantype ")]
+    det.process(types + [_FakeProp("holds", "agent1", "pan 2")], won=False)
+    det.process(types + [_FakeProp("iscool", "pan 2")], won=False)
+    # placed in the WRONG receptacle -> final milestone must not fire
+    r = det.process(types + [_FakeProp("iscool", "pan 2"),
+                             _FakeProp("inreceptacle", "pan 2", "countertop 1")], won=False)
+    assert not r.achieved and det.completed_count == 2
 
 
 # ---------------------------------------------------------------------------

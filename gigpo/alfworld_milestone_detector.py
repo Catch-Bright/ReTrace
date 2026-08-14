@@ -33,8 +33,8 @@ Design notes:
     to turn the lamp on before picking the object.
   * `pick_two_obj_and_place` advances only when two *different* target
     instances have been placed.
-  * `won` is treated as authoritative: if the environment reports the episode
-    won, all remaining milestones are considered reached.
+  * `won` never advances the state machine; only the current expected fact
+    condition can emit the next milestone.
 
 The detector needs only:
   * the task_type, and goal pddl_params (object_target / parent_target /
@@ -168,40 +168,64 @@ class MilestoneResult:
 
 def _parse_facts(facts: Iterable[Any]) -> List[List[str]]:
     """
-    Tokenize a facts collection into predicate + argument tokens.
+    Tokenize a facts collection into ``[predicate, arg1, arg2, ...]`` lists.
 
-    ``facts`` elements may be either TextWorld ``Proposition`` objects (with
-    ``.name`` and iterable argument names), "pred arg1 arg2" strings, or
-    already-split token lists. Returns a list of token lists, e.g.
-    ``[["holds", "agent1", "potato|0|1"], ["inreceptacle", "potato|0|1",
-    "diningtable|0|1"]]``.
+    Each argument is kept as ONE token even when it contains a space: ALFWorld
+    demangles entity names, so real TextWorld facts look like
+    ``Proposition('inreceptacle', (Variable('bread 3'), Variable('diningtable 1')))``
+    and must NOT be split on whitespace.
+
+    ``facts`` elements may be:
+      * TextWorld ``Proposition`` objects (``.name`` + ``.names``/``.arguments``),
+      * already-split token lists/tuples (arguments pre-separated),
+      * ``"pred arg1 arg2"`` strings (whitespace-split; only safe for
+        single-word args, e.g. mangled ids used in tests).
     """
     out: List[List[str]] = []
     for f in facts:
         # TextWorld Proposition: has .name and .names (or .arguments).
         name = getattr(f, "name", None)
         if name is not None:
-            tokens = [str(name).lower()]
+            tokens = [str(name).strip().lower()]
             names = getattr(f, "names", None)
             if names:
                 tokens += [str(n).strip().lower() for n in names]
             else:
                 args = getattr(f, "arguments", None)
                 if args:
-                    tokens += [str(a).strip().lower() for a in args]
+                    tokens += [str(getattr(a, "name", a)).strip().lower() for a in args]
             out.append(tokens)
+            continue
+        # Already-split token list (arguments already separated).
+        if isinstance(f, (list, tuple)):
+            tokens = [str(tok).strip().lower() for tok in f if str(tok).strip()]
+            if tokens:
+                out.append(tokens)
             continue
         if isinstance(f, str):
             tokens = [tok.strip().lower() for tok in f.split() if tok.strip()]
             if tokens:
                 out.append(tokens)
-            continue
-        # Already-split token list (e.g. from a test or a cached fact).
-        if isinstance(f, (list, tuple)):
-            tokens = [tok.strip().lower() for tok in f if tok]
-            if tokens:
-                out.append(tokens)
     return out
+
+
+def _entity_class(token: str) -> str:
+    """
+    Class name of an entity token.
+
+    Handles the three shapes seen in practice:
+      * demangled instance ``"bread 3"``      -> ``"bread"``
+      * objectType/receptacleType value       -> ``"breadtype "`` -> ``"bread"``
+      * mangled id ``"bread|0|3"``            -> ``"bread"``
+    """
+    tok = token.strip().lower()
+    if not tok:
+        return ""
+    tok = tok.split("|", 1)[0].strip()      # mangled id -> class
+    tok = tok.split(" ", 1)[0].strip()      # "bread 3"  -> "bread"
+    if tok.endswith("type"):                # "breadtype" -> "bread"
+        tok = tok[: -len("type")]
+    return tok
 
 
 def _facts_with_pred(facts: List[List[str]], pred: str) -> List[List[str]]:
@@ -257,11 +281,18 @@ class AlfworldMilestoneDetector:
     # Public API
     # -----------------------------------------------------------------------
     def process(self, facts: Iterable[Any], won: bool = False) -> MilestoneResult:
-        """Consume one environment transition (facts + terminal won flag)."""
+        """Consume one environment transition and check the next milestone.
+
+        ``won`` is retained only for call-site compatibility and is deliberately
+        ignored. Progress is derived exclusively from facts, and a call can
+        advance at most one milestone.
+        """
         self.step_count += 1
-        if won and not self._completed:
-            self._complete_authoritative()
-            result = self._closed_result("Episode won: final milestone authoritative.")
+        if self._completed:
+            result = MilestoneResult(
+                phase=MilestonePhase.COMPLETE, achieved=False,
+                message="All milestones completed.",
+            )
             self._record(result)
             return result
 
@@ -339,7 +370,6 @@ class AlfworldMilestoneDetector:
         if self.completed_count == 0 and (have_obj or have_toggle):
             return MilestoneResult(phase=MilestonePhase.TAKE, achieved=True,
                                    message="look_at: 第一个条件成立(取物/开灯)")
-        # milestone 1 requires BOTH conditions satisfied (independent, order free).
         if self.completed_count == 1 and have_obj and have_toggle:
             return MilestoneResult(phase=MilestonePhase.TOGGLE, achieved=True,
                                    message="look_at: 已取目标物且已开灯")
@@ -376,21 +406,29 @@ class AlfworldMilestoneDetector:
         return inst in self._instances_of_cls(facts, self.obj_cls)
 
     def _instances_of_cls(self, facts: List[List[str]], cls: str) -> Set[str]:
-        """All instance ids whose objectType fact declares class ``cls``.
+        """All entity instances whose class is ``cls``.
 
-        Facts embed the class in the mangled id (``potato|1|2`` -> class
-        ``potato``); we also honour explicit ``objecttype <inst> <cls>`` facts.
+        Primary source is the explicit ``objecttype``/``receptacletype`` facts
+        (``('mug 2', 'mugtype ')``). We additionally accept any argument token
+        whose own class matches, which covers entities that have no type fact in
+        the current snapshot (and the mangled ids used by the unit tests).
         """
+        if not cls:
+            return set()
+        cls = _entity_class(cls)
         insts: Set[str] = set()
-        for toks in _facts_with_pred(facts, _PRED["object_type"]):
-            if len(toks) >= 3 and toks[2] == cls:
-                insts.add(toks[1])
-        if cls:
-            pat = re.compile(rf"^{re.escape(cls)}\|\d+\|\d+$")
-            for toks in facts:
-                for tok in toks[1:]:
-                    if pat.match(tok):
-                        insts.add(tok)
+        for pred in (_PRED["object_type"], _PRED["receptacle_type"]):
+            for toks in _facts_with_pred(facts, pred):
+                if len(toks) >= 3 and _entity_class(toks[2]) == cls:
+                    insts.add(toks[1])
+        for toks in facts:
+            # Skip the *type value* argument of type facts (e.g. "mugtype "),
+            # which names a class rather than an instance.
+            skip_last = toks and toks[0] in (_PRED["object_type"], _PRED["receptacle_type"])
+            args = toks[1:-1] if (skip_last and len(toks) >= 3) else toks[1:]
+            for tok in args:
+                if _entity_class(tok) == cls:
+                    insts.add(tok)
         return insts
 
     def _held_goal_instances(self, facts: List[List[str]]) -> Set[str]:
@@ -446,8 +484,8 @@ class AlfworldMilestoneDetector:
         if result.phase == MilestonePhase.TAKE:
             # cosmetic phase label for the next in-progress milestone
             if self.task_type in ("pick_clean_then_place_in_recep",
-                                  "pick_heat_then_place_in_recep",
-                                  "pick_cool_then_place_in_recep"):
+                                    "pick_heat_then_place_in_recep",
+                                    "pick_cool_then_place_in_recep"):
                 self.phase = MilestonePhase.TRANSFORM
             else:
                 self.phase = MilestonePhase.PLACE
@@ -457,17 +495,6 @@ class AlfworldMilestoneDetector:
             if self.task_type == "pick_two_obj_and_place":
                 self.phase = MilestonePhase.TAKE
             # else stays PLACE / COMPLETE
-
-    def _closed_result(self, message: str) -> MilestoneResult:
-        return MilestoneResult(
-            phase=MilestonePhase.COMPLETE if self._completed else MilestonePhase.COMPLETE,
-            achieved=False,
-            message=message,
-        )
-
-    def _complete_authoritative(self) -> None:
-        self._completed = True
-        self.phase = MilestonePhase.COMPLETE
 
     def _record(self, result: MilestoneResult) -> None:
         self.history.append(result)

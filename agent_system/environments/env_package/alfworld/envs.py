@@ -97,17 +97,27 @@ class AlfworldWorker:
         )
 
     @staticmethod
+    def _unwrap(value):
+        """Unwrap a batch_size=1 info value (``['x'] -> 'x'``).
+
+        The underlying TextWorld env is created with ``batch_size=1``, so every
+        requested info arrives as a 1-element sequence.
+        """
+        if isinstance(value, (list, tuple)) and len(value) == 1:
+            return value[0]
+        return value
+
+    @staticmethod
     def _extract_facts(infos):
         """Pull the TextWorld facts out of the info dict.
 
         With ``request_infos.facts=True`` the gym env returns facts under the
-        ``facts`` key. Defensively handle the batch=1 shape (may be wrapped in a
-        list/tuple) and an absent key (detector falls back to no progress).
+        ``facts`` key as a 1-element list holding this episode's fact list.
+        Returns [] when absent (detector then reports no progress).
         """
         facts = infos.get("facts", None)
         if facts is None:
             return []
-        # textworld gym with batch handles single element sometimes; unwrap.
         if isinstance(facts, (list, tuple)) and len(facts) == 1:
             return facts[0]
         return facts
@@ -123,9 +133,8 @@ class AlfworldWorker:
         # 1-element arrays because the parent AlfworldEnvs flattens every info
         # value with `value[0]` (batch_size=1 convention).
         if self.milestone_detector is not None:
-            won = bool(infos.get('won', False))
             facts = self._extract_facts(infos)
-            result = self.milestone_detector.process(facts, won=won)
+            result = self.milestone_detector.process(facts)
             infos['milestone_achieved'] = np.array([bool(result.achieved)])
             infos['milestone_phase'] = np.array([result.phase.value])
             infos['milestone_name'] = np.array([self._milestone_name()])
@@ -144,8 +153,9 @@ class AlfworldWorker:
         obs, infos = self.env.reset()
         infos['observation_text'] = obs
 
-        # WiGPO: (re)build the milestone detector for the new episode.
-        gamefile = infos.get('extra.gamefile', None)
+        # WiGPO: (re)build the milestone detector for the new episode. The env
+        # runs with batch_size=1, so info values arrive as 1-element sequences.
+        gamefile = self._unwrap(infos.get('extra.gamefile', None))
         self._build_milestone_detector(gamefile)
         if self.milestone_detector is not None:
             infos['milestone_achieved'] = np.array([False])
