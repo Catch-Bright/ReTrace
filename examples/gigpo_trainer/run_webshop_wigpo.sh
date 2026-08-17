@@ -13,7 +13,7 @@ num_cpus_per_env_worker=0.1 # The CPU resource allocated for each environment wo
 train_data_size=16
 val_data_size=128
 group_size=8
-mode="mean_norm" # "mean_norm" or "mean_std_norm"
+mode="mean_std_norm" # "mean_norm" or "mean_std_norm"
 # Within each subgroup (obs cluster n segment), average step rewards over identical
 # canonical actions so the same action from the same state/stage gets the same credit
 # (removes reward differences caused by *later* action choices). Invalid actions keep

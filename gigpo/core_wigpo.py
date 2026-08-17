@@ -791,9 +791,14 @@ def compute_wigpo_outcome_advantage(token_level_rewards: torch.Tensor,
 
     # 5. Subgroup-level advantage: normalize the (action-aggregated) step rewards
     #    over the finer subgroups. The subtracted baseline is still the mean over
-    #    all steps in the subgroup.
+    #    all steps in the subgroup (action-group averaging preserves it exactly).
+    #    The std, however, is computed from the *raw* step rewards: averaging
+    #    collapses within-bucket spread, so the aggregated std understates the true
+    #    reward dispersion and would inflate the advantages -- in the degenerate
+    #    case of a single action key per subgroup it is ~0 and the division blows up.
     subgroup_advantages = core_gigpo.step_norm_reward(
-        subgroup_step_rewards, response_mask, subgroup_uids, epsilon, remove_std
+        subgroup_step_rewards, response_mask, subgroup_uids, epsilon, remove_std,
+        std_rewards=step_rewards,
     )
 
     # 6. Joint advantage.

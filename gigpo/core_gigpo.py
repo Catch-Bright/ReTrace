@@ -336,6 +336,7 @@ def step_norm_reward(step_rewards: torch.Tensor,
                       index: np.array,
                       epsilon: float = 1e-6,
                       remove_std: bool = True,
+                      std_rewards: torch.Tensor = None,
                       ):
     """
     Compute step-level advantage using mean-std normalization for GiGPO.
@@ -344,7 +345,14 @@ def step_norm_reward(step_rewards: torch.Tensor,
             shape: (bs,)
         response_mask: `(torch.Tensor)`
             shape: (bs, response_length)
-    
+        std_rewards: `(torch.Tensor)`, optional
+            shape: (bs,). When given, the per-group std used for normalization is
+            computed from these rewards instead of from ``step_rewards``, while the
+            subtracted mean still comes from ``step_rewards``. Used by WiGPO to
+            divide by the *raw* step-reward std after ``step_rewards`` have been
+            action-group averaged (averaging shrinks the within-group std, which
+            would otherwise inflate the advantages).
+
     Returns:
         advantages: `(torch.Tensor)`
             shape: (bs, response_length)
@@ -353,8 +361,10 @@ def step_norm_reward(step_rewards: torch.Tensor,
     """
     response_length = response_mask.shape[-1]
     scores = step_rewards.clone()
+    std_scores = scores if std_rewards is None else std_rewards
 
     id2score = defaultdict(list)
+    id2std_score = defaultdict(list)
     id2mean = {}
     id2std = {}
 
@@ -362,6 +372,7 @@ def step_norm_reward(step_rewards: torch.Tensor,
         bsz = scores.shape[0]
         for i in range(bsz):
             id2score[index[i]].append(scores[i])
+            id2std_score[index[i]].append(std_scores[i])
 
         for idx in id2score:
             if len(id2score[idx]) == 1:
@@ -369,7 +380,7 @@ def step_norm_reward(step_rewards: torch.Tensor,
                 id2std[idx] = torch.tensor(1.0)
             elif len(id2score[idx]) > 1:
                 id2mean[idx] = torch.mean(torch.tensor(id2score[idx]))
-                id2std[idx] = torch.std(torch.tensor([id2score[idx]]))
+                id2std[idx] = torch.std(torch.tensor([id2std_score[idx]]))
             else:
                 print(f"id2score: {id2score}")
                 print(f"len(id2score[idx]): {len(id2score[idx])}")
