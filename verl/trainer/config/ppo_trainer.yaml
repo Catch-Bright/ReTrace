@@ -258,6 +258,10 @@ algorithm:
     milestone_path: null # path to the milestone JSON; null -> gigpo/alfworld_milestones.json (or $WIGPO_MILESTONE_PATH)
     # ---- WiGPO action-group aggregation (within each obs n segment subgroup) ----
     action_group_agg: False # if True, average step rewards over identical canonical actions inside each subgroup
+    # ---- WiGPO probability-weighted think/action split ----
+    use_prob_reweight: False # if True, use probability-weighted think/action advantage split (requires action_group_agg=True)
+    prob_reweight_clip_min: 0.5 # minimum value for rho_i scaling factor
+    prob_reweight_clip_max: 1.5 # maximum value for rho_i scaling factor
     # ---- WiGPO subtask-shaped step reward (replaces GiGPO discounted-return step_rewards) ----
     use_subtask_shaped_reward: True # if False, WiGPO keeps GiGPO's discounted-return step_rewards
     subtask_reward_max: 10.0 # total task reward R_max, split equally over the task's milestones

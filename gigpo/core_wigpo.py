@@ -723,6 +723,437 @@ def aggregate_action_group_rewards(step_rewards: torch.Tensor,
 
 
 # ---------------------------------------------------------- #
+# --------------- think / action token split --------------- #
+# ---------------------------------------------------------- #
+
+_ACTION_OPEN_TAG = "<action>"
+
+# The `<action>...</action>` block always sits at the tail of a well-formed
+# response, so the span is found by walking backwards a bounded number of tokens
+# instead of decoding the whole sequence.
+_MAX_ACTION_TAIL_TOKENS = 96
+
+# id -> decoded piece, so the backward scan decodes each vocab entry at most once.
+_piece_cache: Dict[int, str] = {}
+_piece_cache_owner: Optional[int] = None
+
+
+def _token_piece(tokenizer, token_id: int) -> str:
+    global _piece_cache_owner
+    if _piece_cache_owner != id(tokenizer):
+        _piece_cache.clear()
+        _piece_cache_owner = id(tokenizer)
+    piece = _piece_cache.get(token_id)
+    if piece is None:
+        piece = tokenizer.decode([token_id])
+        _piece_cache[token_id] = piece
+    return piece
+
+
+def _locate_action_tag_full(responses_cpu: torch.Tensor,
+                            valid_pos: List[int],
+                            tokenizer) -> Optional[int]:
+    """
+    Robust fallback for locating the ``<action>`` opening tag: decode the whole
+    valid response and search the full text.
+
+    The fast path (``build_action_token_mask``) only scans the last
+    ``max_tail_tokens`` pieces; when the tag lies beyond that window, or the
+    tail pieces happen not to reassemble ``<action>`` contiguously, this helper
+    tries again on the complete decoded response -- mirroring how the env
+    projection extracts the action from the full raw string.
+
+    Returns the token position whose decoded piece contains the first character
+    of ``<action>``, or None if the tag is not present.
+
+    Args:
+        responses_cpu: token ids for ONE row, shape (1, response_length), on CPU.
+        valid_pos: 0/1 validity mask positions for that row, ascending.
+        tokenizer: HF tokenizer used to produce ``responses``.
+    """
+    # Decode only the valid tokens so padding / trailing specials do not shift
+    # the character offset of the tag.
+    pieces = []
+    lengths = []
+    text = ""
+    for p in valid_pos:
+        piece = _token_piece(tokenizer, int(responses_cpu[0, p]))
+        pieces.append(piece)
+        lengths.append(len(piece))
+        text += piece
+
+    char_idx = text.lower().find(_ACTION_OPEN_TAG)
+    if char_idx == -1:
+        return None
+
+    # Map the character offset back to the token that covers it.
+    acc = 0
+    for p, ln in zip(valid_pos, lengths):
+        if char_idx < acc + ln:
+            return p
+        acc += ln
+    return None
+
+
+def build_action_token_mask(responses: torch.Tensor,
+                            response_mask: torch.Tensor,
+                            tokenizer,
+                            max_tail_tokens: int = _MAX_ACTION_TAIL_TOKENS,
+                            summarize: bool = True):
+    """
+    Split each response into its *think* part and its *action* part.
+
+    A step's generation is ``<think>...</think><action>...</action>``. The two
+    parts answer different questions and therefore deserve different credit (see
+    ``compute_prob_weighted_think_action_advantages``), so the tokens have to be separated.
+
+    The action part is defined as every valid response token from the first token
+    that contributes to the opening ``<action>`` tag through the end of the
+    response. Tokenizers merge the tag with its neighbours in several ways
+    (``'><' | 'action' | '>'``, ``'<' | 'action' | '>'``, ``' <' | 'action' | '>'``),
+    so the boundary is located on the *decoded* text rather than on token ids, and
+    the merged boundary token is assigned to the action part.
+
+    Two search strategies, in order:
+
+    1. Fast path: walk backwards over the last ``max_tail_tokens`` valid tokens,
+       accumulating decoded pieces until ``<action>`` appears. Cheap, covers the
+       typical case where the tag sits at the tail of the response.
+    2. Full fallback: when the fast path fails, decode the WHOLE valid response
+       and search the complete text (like the env projection does on the raw
+       string). This handles tags beyond the tail window or piece boundaries
+       that defeat the backward scan.
+
+    A step is marked ``located`` (and participates in the probability split)
+    only if one of the two searches actually found the tag; otherwise its mask
+    stays all-zero and it falls back to the raw subgroup advantage downstream.
+
+    Args:
+        responses: token ids, shape (bsz, response_length).
+        response_mask: 0/1 validity mask, shape (bsz, response_length).
+        tokenizer: HF tokenizer used to produce ``responses``.
+        max_tail_tokens: how far back from the end of the response to look
+            (fast path only).
+        summarize: print diagnostics.
+
+    Returns:
+        action_token_mask: same shape/dtype as ``response_mask``; 1 on action
+            tokens, 0 elsewhere (including on padding). Rows where the tag could
+            not be located stay all-zero, which makes them fall back to the
+            undecomposed advantage downstream.
+        located: np.ndarray[bool] of shape (bsz,), True where the tag was found.
+    """
+    bsz = response_mask.shape[0]
+    action_token_mask = torch.zeros_like(response_mask)
+    located = np.zeros(bsz, dtype=bool)
+
+    responses_cpu = responses.detach().cpu()
+    mask_cpu = response_mask.detach().cpu()
+
+    n_full_fallback = 0
+    for b in range(bsz):
+        valid_pos = torch.nonzero(mask_cpu[b], as_tuple=False).flatten().tolist()
+        if not valid_pos:
+            continue
+
+        # Fast path: bounded backward scan over decoded tail pieces.
+        tail = ""
+        start_pos = None
+        for pos in reversed(valid_pos[-max_tail_tokens:]):
+            tail = _token_piece(tokenizer, int(responses_cpu[b, pos])) + tail
+            if _ACTION_OPEN_TAG in tail.lower():
+                start_pos = pos
+                break
+
+        # Full fallback: decode the whole valid response and search the text,
+        # mirroring the env projection's find("<action>").
+        if start_pos is None:
+            n_full_fallback += 1
+            start_pos = _locate_action_tag_full(
+                responses_cpu[b:b + 1], valid_pos, tokenizer)
+
+        if start_pos is None:
+            continue
+
+        located[b] = True
+        action_token_mask[b, start_pos:valid_pos[-1] + 1] = 1
+        # Only tokens that were valid to begin with may be marked.
+        action_token_mask[b] = action_token_mask[b] * mask_cpu[b].to(action_token_mask.dtype)
+
+    action_token_mask = action_token_mask.to(response_mask.device)
+
+    if summarize:
+        n_located = int(located.sum())
+        n_action = action_token_mask.sum().item()
+        n_valid = response_mask.sum().item()
+        print(f"\n[WiGPO think/action Split]")
+        print(f"  Responses with a located <action> span: {n_located} / {bsz} "
+              f"({100.0 * n_located / max(bsz, 1):.1f}%)")
+        print(f"  Action tokens: {n_action:.0f} / {n_valid:.0f} valid response tokens "
+              f"({100.0 * n_action / max(n_valid, 1):.1f}%)")
+        if n_full_fallback:
+            print(f"  Full-decoded fallback searches: {n_full_fallback} "
+                  f"(fast path failed, full-text search attempted)")
+        if n_located < bsz:
+            print(f"  Unlocated rows fall back to the undecomposed subgroup advantage.")
+
+    return action_token_mask, located
+
+
+def compute_action_probs(old_log_probs: torch.Tensor,
+                         action_token_mask: torch.Tensor,
+                         response_mask: torch.Tensor) -> torch.Tensor:
+    """
+    Compute the average log-probability of action tokens for each step.
+
+    For each step i, compute:
+        p_i = exp((1/|a_i|) * sum_{j in action tokens} log π_old(y_{i,j}))
+
+    This represents how much the think part supports the actual action taken.
+
+    Args:
+        old_log_probs: per-token log probabilities from π_old, shape (bsz, seq_len)
+        action_token_mask: binary mask for action tokens, shape (bsz, seq_len)
+        response_mask: binary mask for valid tokens, shape (bsz, seq_len)
+
+    Returns:
+        action_probs: shape (bsz,), the probability p_i for each step
+    """
+    with torch.no_grad():
+        # Mask to select only action tokens
+        action_mask = action_token_mask * response_mask
+
+        # Sum of log probs over action tokens
+        action_log_sum = (old_log_probs * action_mask).sum(dim=-1)
+
+        # Number of action tokens per step
+        action_token_count = action_mask.sum(dim=-1).clamp(min=1.0)  # avoid division by zero
+
+        # Average log prob over action tokens
+        avg_action_log_prob = action_log_sum / action_token_count
+
+        # Convert to probability
+        action_probs = torch.exp(avg_action_log_prob)
+
+    return action_probs
+
+
+def compute_prob_weighted_think_action_advantages(
+        step_rewards: torch.Tensor,
+        subgroup_uids: np.ndarray,
+        action_keys: np.ndarray,
+        action_probs: torch.Tensor,
+        located: np.ndarray,
+        epsilon: float = 1e-6,
+        remove_std: bool = True,
+        clip_min: float = 0.5,
+        clip_max: float = 1.5,
+        summarize: bool = True):
+    """
+    Compute think and action advantages based on action probability weighting,
+    with fallbacks for steps/subgroups where the split is ill-defined.
+
+    Baseline (shared by every step in the same subgroup):
+
+        A_raw_i = normalize(raw_step_reward_i, subgroup 内所有 raw_step_rewards)
+
+        mean_norm:      A_raw_i = r_i - mean(r_subgroup)
+        mean_std_norm:  A_raw_i = (r_i - mean(r_subgroup)) / (std(r_subgroup) + eps)
+
+    Only steps satisfying ALL of the following conditions enter the probability-
+    weighted think/action split:
+
+      1. ``located[i]`` is True (the <action> boundary was found);
+      2. its action category has >= 2 located steps (otherwise p_i / p_bar
+         carries no comparison information);
+      3. its subgroup has >= 2 distinct valid action categories (otherwise
+         action-group averaging collapses every step's advantage to 0).
+
+    For such steps:
+
+        p_bar      = mean of p_i over located steps of the same action category
+        rho_i      = clip(p_i / p_bar, clip_min, clip_max)
+        A_act_i    = A_public   (shared by all steps taking that action)
+        A_think_i  = rho_i * A_public
+
+    where ``A_public`` is the action-bucket mean reward normalized within the
+    subgroup, averaged over ALL steps that took the action (unlocated steps
+    still provide reward evidence for the action).
+
+    Every other step -- unlocated, or in a singleton action category, or in a
+    single-action-category subgroup, or with an invalid action -- falls back to
+    ``A_raw_i`` on ALL its valid tokens (think and action alike). In particular:
+
+    * an unlocated step never contributes to ``p_bar`` and never affects other
+      steps' ``rho``;
+    * a subgroup with a single step gives A_raw = 0 automatically (mean of a
+      singleton is the reward itself);
+    * a subgroup whose steps all share one valid action category skips
+      aggregation entirely and uses A_raw for every step.
+
+    Args:
+        step_rewards: raw per-step rewards, shape (bsz,)
+        subgroup_uids: subgroup id per step, shape (bsz,)
+        action_keys: canonical action key per step, shape (bsz,)
+        action_probs: probability p_i per step, shape (bsz,); values for
+            unlocated steps are ignored.
+        located: bool per step, True where the <action> span was found
+            (output of ``build_action_token_mask``).
+        epsilon: denominator guard.
+        remove_std: if True, only center (no division), matching
+            ``core_gigpo.step_norm_reward``'s mean_norm behaviour.
+        clip_min: minimum value for rho_i.
+        clip_max: maximum value for rho_i.
+        summarize: print diagnostics.
+
+    Returns:
+        think_adv: shape (bsz,), advantage for think tokens (== A_raw on
+            fallback steps, rho_i * A_public on split steps).
+        act_adv: shape (bsz,), advantage for action tokens (== A_raw on
+            fallback steps, A_public on split steps).
+    """
+    with torch.no_grad():
+        bsz = step_rewards.shape[0]
+        device = step_rewards.device
+        dtype = step_rewards.dtype
+
+        # ---- per-subgroup raw normalization (A_raw), shared baseline ----
+        subgroup_to_indices: Dict[object, List[int]] = defaultdict(list)
+        for i in range(bsz):
+            subgroup_to_indices[subgroup_uids[i]].append(i)
+
+        subgroup_mean: Dict[object, float] = {}
+        subgroup_std: Dict[object, float] = {}
+        for sg_id, indices in subgroup_to_indices.items():
+            rewards = step_rewards[indices]
+            subgroup_mean[sg_id] = rewards.mean().item()
+            if remove_std:
+                subgroup_std[sg_id] = 1.0
+            else:
+                # Singleton subgroups get std 1.0 like core_gigpo, so their
+                # A_raw = (r - mean([r])) / (1 + eps) = 0.
+                subgroup_std[sg_id] = rewards.std().item() if len(indices) > 1 else 1.0
+
+        a_raw = torch.zeros(bsz, dtype=dtype, device=device)
+        for i in range(bsz):
+            sg = subgroup_uids[i]
+            if remove_std:
+                # mean_norm: center only, no division (matches core_gigpo and
+                # the spec A_raw_i = r_i - mean(r_subgroup)).
+                a_raw[i] = step_rewards[i] - subgroup_mean[sg]
+            else:
+                a_raw[i] = (step_rewards[i] - subgroup_mean[sg]) / (subgroup_std[sg] + epsilon)
+
+        # ---- action categories (group = subgroup x action) ----
+        # group_all: every step that took the action (feeds the public reward).
+        # group_located: only steps with a detected think/action boundary
+        # (feeds p_bar / rho; unlocated steps must not pollute the mean).
+        group_all: Dict[tuple, List[int]] = defaultdict(list)
+        group_located: Dict[tuple, List[int]] = defaultdict(list)
+        subgroup_valid_actions: Dict[object, set] = defaultdict(set)
+        for i in range(bsz):
+            key = action_keys[i]
+            if key == INVALID_ACTION_KEY:
+                continue
+            gk = (subgroup_uids[i], key)
+            group_all[gk].append(i)
+            if located[i]:
+                group_located[gk].append(i)
+                subgroup_valid_actions[subgroup_uids[i]].add(key)
+
+        # An action category is comparable only if its subgroup holds >= 2
+        # distinct valid action categories; within it, the split needs >= 2
+        # located steps.
+        subgroup_eligible = {
+            sg: len(actions) >= 2 for sg, actions in subgroup_valid_actions.items()
+        }
+        group_eligible = {
+            gk: len(group_located[gk]) >= 2 for gk in group_all
+        }
+
+        # ---- public action advantage A_public for eligible groups ----
+        # Action-bucket mean over ALL steps that took the action (unlocated
+        # steps still provide reward evidence), normalized within the subgroup.
+        public_adv = torch.zeros(bsz, dtype=dtype, device=device)
+        for gk, indices in group_all.items():
+            if not group_eligible[gk]:
+                continue
+            sg = gk[0]
+            mean_r = step_rewards[indices].mean()
+            if remove_std:
+                public_adv[indices] = mean_r - subgroup_mean[sg]
+            else:
+                public_adv[indices] = (mean_r - subgroup_mean[sg]) / (subgroup_std[sg] + epsilon)
+
+        # ---- per-step split factor rho_i (eligible steps only) ----
+        rho = torch.ones(bsz, dtype=dtype, device=device)
+        for gk, indices in group_located.items():
+            if not group_eligible[gk]:
+                continue
+            p_bar = action_probs[indices].mean().item()
+            if p_bar <= 1e-9:
+                continue
+            for i in indices:
+                rho[i] = max(clip_min, min(clip_max, action_probs[i].item() / p_bar))
+
+        # ---- final per-step advantages with fallbacks ----
+        think_adv = torch.zeros(bsz, dtype=dtype, device=device)
+        act_adv = torch.zeros(bsz, dtype=dtype, device=device)
+        n_split = 0
+        n_unlocated = 0
+        n_singleton_action = 0
+        n_single_action_subgroup = 0
+        n_invalid = 0
+        for i in range(bsz):
+            key = action_keys[i]
+            if key == INVALID_ACTION_KEY:
+                n_invalid += 1
+                think_adv[i] = a_raw[i]
+                act_adv[i] = a_raw[i]
+                continue
+            gk = (subgroup_uids[i], key)
+            sg = subgroup_uids[i]
+            if (located[i] and group_eligible.get(gk, False)
+                    and subgroup_eligible.get(sg, False)):
+                think_adv[i] = rho[i] * public_adv[i]
+                act_adv[i] = public_adv[i]
+                n_split += 1
+            else:
+                if not located[i]:
+                    n_unlocated += 1
+                elif not group_eligible.get(gk, False):
+                    n_singleton_action += 1
+                else:
+                    n_single_action_subgroup += 1
+                think_adv[i] = a_raw[i]
+                act_adv[i] = a_raw[i]
+
+        if summarize:
+            rho_np = rho.cpu().numpy()
+            split_rho = rho_np[np.abs(rho_np - 1.0) > 1e-9]  # rho != 1 means it was computed
+            n_clip_low = int((rho_np <= clip_min + 1e-6).sum())
+            n_clip_high = int((rho_np >= clip_max - 1e-6).sum())
+            print(f"\n[WiGPO Prob-Weighted Think/Action Advantages]")
+            print(f"  Action groups: {len(group_all)} "
+                  f"({sum(1 for v in group_eligible.values() if v)} eligible for split)")
+            print(f"  Split steps: {n_split} / {bsz}")
+            print(f"  Fallback to raw subgroup advantage: {bsz - n_split} / {bsz}")
+            print(f"    - unlocated think/action boundary: {n_unlocated}")
+            print(f"    - singleton action category (<2 located steps): {n_singleton_action}")
+            print(f"    - subgroup with a single valid action category: {n_single_action_subgroup}")
+            print(f"    - invalid action: {n_invalid}")
+            if len(split_rho) > 0:
+                print(f"  rho (split steps only) stats: "
+                      f"mean={split_rho.mean():.3f}, "
+                      f"min={split_rho.min():.3f}, "
+                      f"max={split_rho.max():.3f}")
+            print(f"  rho clipped at [{clip_min}, {clip_max}]: "
+                  f"{n_clip_low + n_clip_high} / {bsz}")
+
+    return think_adv, act_adv
+
+
+# ---------------------------------------------------------- #
 # --------------- WiGPO advantage -------------------------- #
 # ---------------------------------------------------------- #
 
@@ -740,6 +1171,11 @@ def compute_wigpo_outcome_advantage(token_level_rewards: torch.Tensor,
                                     enable_similarity: bool = False,
                                     similarity_thresh: float = 0.95,
                                     action_keys: np.ndarray = None,
+                                    action_token_mask: torch.Tensor = None,
+                                    located: np.ndarray = None,
+                                    old_log_probs: torch.Tensor = None,
+                                    prob_reweight_clip_min: float = 0.5,
+                                    prob_reweight_clip_max: float = 1.5,
                                     ):
     """
     Compute WiGPO advantages: GiGPO refined by subtask-segment subgroups.
@@ -750,11 +1186,24 @@ def compute_wigpo_outcome_advantage(token_level_rewards: torch.Tensor,
 
     With ``subgroup_advantage_w == 0`` this is identical to GiGPO.
 
-    When ``action_keys`` is given, the subgroup term first averages step rewards
-    over identical canonical actions inside each subgroup (see
-    ``aggregate_action_group_rewards``), so that the same action taken from the
-    same state/segment receives the same credit. The obs-cluster ``step_adv``
-    term always uses the raw, unaggregated step rewards.
+    The subgroup term has several forms:
+    1. ``action_keys is None``: plain within-subgroup normalization of raw step rewards.
+    2. ``action_keys`` given, others None: step rewards averaged over identical actions,
+       whole response gets the same aggregated advantage.
+    3. ``action_keys``, ``action_token_mask``, ``located``, and ``old_log_probs``
+       all given: probability-weighted think/action split. Action tokens get the
+       public action advantage A_public; think tokens get rho_i * A_public, where
+       rho_i reflects how strongly this step's think supports the action compared
+       to other steps with the same action in the same subgroup.
+
+       ``located`` gates the split (see
+       ``compute_prob_weighted_think_action_advantages`` for the full rules):
+       steps without a detected <action> boundary, singleton action categories,
+       and subgroups with a single valid action category fall back to the raw
+       within-subgroup advantage A_raw on all their tokens. A located step never
+       contaminates the p_bar of its action category.
+
+    The obs-cluster ``step_adv`` term always uses the raw, unaggregated step rewards.
     """
     if mode == "mean_std_norm":
         remove_std = False
@@ -781,25 +1230,58 @@ def compute_wigpo_outcome_advantage(token_level_rewards: torch.Tensor,
     # 4. WiGPO subgroup = obs-cluster n segment.
     subgroup_uids = build_subgroup_uids(step_group_uids, segment_ids, summarize=True)
 
-    # 4b. Within each subgroup, average rewards over identical canonical actions.
-    if action_keys is not None:
+    # 5. Subgroup-level advantage with probability-weighted think/action split.
+    if (action_keys is not None and action_token_mask is not None
+        and old_log_probs is not None and located is not None):
+        # Probability-weighted split: think and action get different advantages
+        # based on how much the think supports the action. ``located`` gates the
+        # split: steps without a detected <action> boundary (and their action
+        # categories / subgroups, per the fallback rules) use A_raw instead.
+
+        # Compute action probabilities
+        action_probs = compute_action_probs(old_log_probs, action_token_mask, response_mask)
+
+        # Compute think and action advantages
+        think_adv, act_adv = compute_prob_weighted_think_action_advantages(
+            step_rewards=step_rewards,
+            subgroup_uids=subgroup_uids,
+            action_keys=action_keys,
+            action_probs=action_probs,
+            located=located,
+            epsilon=epsilon,
+            remove_std=remove_std,
+            clip_min=prob_reweight_clip_min,
+            clip_max=prob_reweight_clip_max,
+            summarize=True,
+        )
+
+        # Broadcast to token level. For fallback steps think_adv == act_adv ==
+        # A_raw, so every valid token receives the same raw advantage regardless
+        # of the mask; for split steps the masks separate the two roles.
+        response_length = response_mask.shape[-1]
+        think_adv_tok = think_adv.unsqueeze(-1).tile([1, response_length]) * response_mask
+        act_adv_tok = act_adv.unsqueeze(-1).tile([1, response_length]) * response_mask
+
+        # Think mask = valid tokens that are not action tokens
+        think_mask = response_mask * (1 - action_token_mask.to(response_mask.dtype))
+
+        # Apply advantages: action tokens get act_adv, think tokens get think_adv
+        subgroup_advantages = act_adv_tok * action_token_mask.to(response_mask.dtype) + think_adv_tok * think_mask
+
+    elif action_keys is not None:
+        # Action-group aggregation without probability weighting
         subgroup_step_rewards = aggregate_action_group_rewards(
             step_rewards, subgroup_uids, action_keys, summarize=True
         )
+        subgroup_advantages = core_gigpo.step_norm_reward(
+            subgroup_step_rewards, response_mask, subgroup_uids, epsilon, remove_std,
+            std_rewards=step_rewards,
+        )
     else:
-        subgroup_step_rewards = step_rewards
-
-    # 5. Subgroup-level advantage: normalize the (action-aggregated) step rewards
-    #    over the finer subgroups. The subtracted baseline is still the mean over
-    #    all steps in the subgroup (action-group averaging preserves it exactly).
-    #    The std, however, is computed from the *raw* step rewards: averaging
-    #    collapses within-bucket spread, so the aggregated std understates the true
-    #    reward dispersion and would inflate the advantages -- in the degenerate
-    #    case of a single action key per subgroup it is ~0 and the division blows up.
-    subgroup_advantages = core_gigpo.step_norm_reward(
-        subgroup_step_rewards, response_mask, subgroup_uids, epsilon, remove_std,
-        std_rewards=step_rewards,
-    )
+        # No action grouping: plain subgroup advantage
+        subgroup_advantages = core_gigpo.step_norm_reward(
+            step_rewards, response_mask, subgroup_uids, epsilon, remove_std
+        )
 
     # 6. Joint advantage.
     scores = (episode_advantages

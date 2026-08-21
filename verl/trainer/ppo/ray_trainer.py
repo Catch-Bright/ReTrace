@@ -243,7 +243,7 @@ def compute_response_mask(data: DataProto):
     return attention_mask[:, -response_length:]
 
 
-def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_repeat=1, multi_turn=False, norm_adv_by_std_in_grpo=True, step_advantage_w=1.0, gigpo_mode="mean_std_norm", gigpo_enable_similarity=False, gigpo_similarity_thresh=0.95, subgroup_advantage_w=1.0, milestone_threshold=0.85, milestone_path=None, action_group_agg=False, **kwargs):
+def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_repeat=1, multi_turn=False, norm_adv_by_std_in_grpo=True, step_advantage_w=1.0, gigpo_mode="mean_std_norm", gigpo_enable_similarity=False, gigpo_similarity_thresh=0.95, subgroup_advantage_w=1.0, milestone_threshold=0.85, milestone_path=None, action_group_agg=False, use_prob_reweight=False, prob_reweight_clip_min=0.5, prob_reweight_clip_max=1.5, tokenizer=None, **kwargs):
     """Compute advantage estimates for policy optimization.
 
     This function computes advantage estimates using various estimators like GAE, GRPO, REINFORCE++, etc.
@@ -375,6 +375,33 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
                     for i in range(len(raw_actions))
                 ], dtype=object)
 
+        # Probability-weighted think/action split parameters
+        action_token_mask = None
+        located = None
+        old_log_probs = None
+        if use_prob_reweight and action_keys is not None:
+            # Build action token mask
+            if tokenizer is not None and 'responses' in data.batch:
+                action_token_mask, located = core_wigpo.build_action_token_mask(
+                    responses=data.batch['responses'],
+                    response_mask=data.batch['response_mask'],
+                    tokenizer=tokenizer,
+                    summarize=True,
+                )
+                # Get old log probs for probability computation
+                if 'old_log_probs' in data.batch:
+                    old_log_probs = data.batch['old_log_probs']
+                else:
+                    print("[WiGPO Warning] use_prob_reweight=True but 'old_log_probs' "
+                          "is missing; falling back to action-group aggregation without "
+                          "probability weighting.")
+                    action_token_mask = None
+                    located = None
+            else:
+                print("[WiGPO Warning] use_prob_reweight=True but tokenizer or responses "
+                      "is missing; falling back to action-group aggregation without "
+                      "probability weighting.")
+
         advantages, returns = core_wigpo.compute_wigpo_outcome_advantage(
             token_level_rewards=data.batch['token_level_rewards'], # for episode group reward computing
             step_rewards=data.batch['step_rewards'], # for step / subgroup reward computing
@@ -389,6 +416,11 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
             enable_similarity=gigpo_enable_similarity,
             similarity_thresh=gigpo_similarity_thresh,
             action_keys=action_keys,
+            action_token_mask=action_token_mask,
+            located=located,
+            old_log_probs=old_log_probs,
+            prob_reweight_clip_min=prob_reweight_clip_min,
+            prob_reweight_clip_max=prob_reweight_clip_max,
             )
         data.batch['advantages'] = advantages
         data.batch['returns'] = returns
@@ -1311,6 +1343,10 @@ class RayPPOTrainer:
                             milestone_threshold=self.config.algorithm.gigpo.get('milestone_threshold', 0.85),
                             milestone_path=self.config.algorithm.gigpo.get('milestone_path', None),
                             action_group_agg=self.config.algorithm.gigpo.get('action_group_agg', False),
+                            use_prob_reweight=self.config.algorithm.gigpo.get('use_prob_reweight', False),
+                            prob_reweight_clip_min=self.config.algorithm.gigpo.get('prob_reweight_clip_min', 0.5),
+                            prob_reweight_clip_max=self.config.algorithm.gigpo.get('prob_reweight_clip_max', 1.5),
+                            tokenizer=self.tokenizer,
                         )
 
                     # update critic

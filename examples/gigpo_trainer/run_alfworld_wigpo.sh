@@ -21,6 +21,17 @@ mode="mean_std_norm" # "mean_norm" or "mean_std_norm"
 # normalization denominator shrinks too and the subgroup advantage scale grows.
 # Tune subgroup_advantage_w if the gradient magnitude changes noticeably.
 action_group_agg=True
+
+# Probability-weighted think/action advantage separation:
+# When enabled, think and action tokens get different advantages based on how strongly
+# the think supports the action. Steps with same action in same subgroup get:
+#   - Same action advantage (action tokens learn "is this action good?")
+#   - Different think advantages scaled by p_i/p_bar (think tokens learn "how much do I support it?")
+# where p_i is the model's probability for the action after this step's think.
+# Requires action_group_agg=True.
+use_prob_reweight=False
+prob_reweight_clip_min=0.5  # min value for rho_i scaling factor
+prob_reweight_clip_max=1.5  # max value for rho_i scaling factor
 # reverse_decay_from_step_split: Each step gets reward from its OWN milestone + every LATER
 # completed milestone, with discount measured from THIS step i: gamma^(e_s - i) + sum_j gamma^(e_j - i).
 # Each milestone contributes r_max/M. Completing all M gives max reward = r_max.
@@ -84,6 +95,9 @@ python3 -m verl.trainer.main_ppo \
     algorithm.gigpo.step_advantage_w=0 \
     algorithm.gigpo.subgroup_advantage_w=1.0 \
     algorithm.gigpo.action_group_agg=$action_group_agg \
+    algorithm.gigpo.use_prob_reweight=$use_prob_reweight \
+    algorithm.gigpo.prob_reweight_clip_min=$prob_reweight_clip_min \
+    algorithm.gigpo.prob_reweight_clip_max=$prob_reweight_clip_max \
     algorithm.gigpo.milestone_threshold=0.95 \
     algorithm.gigpo.milestone_path=$milestone_path \
     algorithm.gigpo.mode=$mode \
