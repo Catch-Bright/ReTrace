@@ -402,7 +402,7 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
                       "is missing; falling back to action-group aggregation without "
                       "probability weighting.")
 
-        advantages, returns = core_wigpo.compute_wigpo_outcome_advantage(
+        advantages, returns, rho_stats = core_wigpo.compute_wigpo_outcome_advantage(
             token_level_rewards=data.batch['token_level_rewards'], # for episode group reward computing
             step_rewards=data.batch['step_rewards'], # for step / subgroup reward computing
             response_mask=data.batch['response_mask'],
@@ -424,6 +424,7 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
             )
         data.batch['advantages'] = advantages
         data.batch['returns'] = returns
+        data.meta_info['wigpo_rho_stats'] = rho_stats
     else:
         raise NotImplementedError
     return data
@@ -1348,6 +1349,14 @@ class RayPPOTrainer:
                             prob_reweight_clip_max=self.config.algorithm.gigpo.get('prob_reweight_clip_max', 1.5),
                             tokenizer=self.tokenizer,
                         )
+
+                        # rho distribution of the prob-weighted split (split steps
+                        # only) -> wandb metrics, for choosing clip bounds from data.
+                        rho_stats = batch.meta_info.get('wigpo_rho_stats', {})
+                        if rho_stats:
+                            metrics.update(
+                                {f"gigpo/rho_{k}": v for k, v in rho_stats.items()}
+                            )
 
                     # update critic
                     if self.use_critic:

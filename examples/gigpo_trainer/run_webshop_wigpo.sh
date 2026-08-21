@@ -27,9 +27,12 @@ action_group_agg=True
 #   - Different think advantages scaled by p_i/p_bar (think tokens learn "how much do I support it?")
 # where p_i is the model's probability for the action after this step's think.
 # Requires action_group_agg=True.
-use_prob_reweight=False
-prob_reweight_clip_min=0.5  # min value for rho_i scaling factor
-prob_reweight_clip_max=1.5  # max value for rho_i scaling factor
+use_prob_reweight=True
+# rho_i clip bounds for the prob-weighted split. Empty (or null) = collect mode:
+# no clipping is applied and the raw p_i/p_bar ratio distribution is logged to
+# wandb (gigpo/rho_*) so you can pick bounds from data for the real run.
+prob_reweight_clip_min=  # min value for rho_i scaling factor
+prob_reweight_clip_max=  # max value for rho_i scaling factor
 # Subtask-shaped step reward mode. Switch freely between:
 #   "reverse_decay"                  : BEACON-style. Each step only gets its OWN milestone's
 #                                      terminal reward, reverse-decayed: gamma^(e_s - i) * r_max.
@@ -95,7 +98,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=16 \
     actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
     actor_rollout_ref.rollout.name=$ENGINE \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.7 \
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.8 \
     actor_rollout_ref.rollout.enable_chunked_prefill=False \
     actor_rollout_ref.rollout.enforce_eager=False \
     actor_rollout_ref.rollout.free_cache_engine=False \
@@ -106,29 +109,29 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.use_invalid_action_penalty=True \
     actor_rollout_ref.actor.invalid_action_penalty_coef=0.1 \
     algorithm.use_kl_in_reward=False \
-    algorithm.gamma=0.99 \
+    algorithm.gamma=0.95\
     algorithm.gigpo.step_advantage_w=0 \
     algorithm.gigpo.subgroup_advantage_w=1.0 \
     algorithm.gigpo.action_group_agg=$action_group_agg \
     algorithm.gigpo.use_prob_reweight=$use_prob_reweight \
-    algorithm.gigpo.prob_reweight_clip_min=$prob_reweight_clip_min \
-    algorithm.gigpo.prob_reweight_clip_max=$prob_reweight_clip_max \
+    algorithm.gigpo.prob_reweight_clip_min=${prob_reweight_clip_min:-null} \
+    algorithm.gigpo.prob_reweight_clip_max=${prob_reweight_clip_max:-null} \
     algorithm.gigpo.mode=$mode \
     algorithm.gigpo.use_subtask_shaped_reward=True \
     algorithm.gigpo.subtask_reward_mode=$subtask_reward_mode \
     algorithm.gigpo.subtask_decay_beta=0.5 \
     env.env_name=Webshop \
-    env.seed=42 \
+    env.seed=0 \
     env.max_steps=15 \
     env.rollout.n=$group_size \
     env.resources_per_worker.num_cpus=$num_cpus_per_env_worker \
     trainer.critic_warmup=0 \
     trainer.logger=['console','wandb'] \
     trainer.project_name='verl_agent_webshop' \
-    trainer.experiment_name='wigpo_qwen2.5_1.5b-rw4-actgroup' \
-    trainer.n_gpus_per_node=4 \
+    trainer.experiment_name='wigpo_qwen2.5_1.5b-rw4-actgrewight' \
+    trainer.n_gpus_per_node=2 \
     trainer.nnodes=1 \
     trainer.save_freq=-1 \
     trainer.test_freq=5 \
-    trainer.total_epochs=170 \
+    trainer.total_epochs=160 \
     trainer.val_before_train=True $@

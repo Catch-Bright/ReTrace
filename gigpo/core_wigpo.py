@@ -1002,8 +1002,10 @@ def compute_prob_weighted_think_action_advantages(
         epsilon: denominator guard.
         remove_std: if True, only center (no division), matching
             ``core_gigpo.step_norm_reward``'s mean_norm behaviour.
-        clip_min: minimum value for rho_i.
-        clip_max: maximum value for rho_i.
+        clip_min: minimum value for rho_i; None disables clipping (collect
+            mode: raw p_i / p_bar ratios are kept and their distribution is
+            returned in ``rho_stats`` so clip bounds can be chosen from data).
+        clip_max: maximum value for rho_i; None disables clipping.
         summarize: print diagnostics.
 
     Returns:
@@ -1011,6 +1013,9 @@ def compute_prob_weighted_think_action_advantages(
             fallback steps, rho_i * A_public on split steps).
         act_adv: shape (bsz,), advantage for action tokens (== A_raw on
             fallback steps, A_public on split steps).
+        rho_stats: dict with the rho distribution of split steps (min/max/mean
+            and p1/p5/p50/p95/p99), n_clipped_low / n_clipped_high counts and
+            the clip bounds in effect. Empty dict when no step was split.
     """
     with torch.no_grad():
         bsz = step_rewards.shape[0]
@@ -1086,6 +1091,9 @@ def compute_prob_weighted_think_action_advantages(
                 public_adv[indices] = (mean_r - subgroup_mean[sg]) / (subgroup_std[sg] + epsilon)
 
         # ---- per-step split factor rho_i (eligible steps only) ----
+        # clip_min/clip_max None: collect mode, keep the raw p_i / p_bar ratio
+        # so the distribution can be measured before choosing clip bounds.
+        do_clip = clip_min is not None and clip_max is not None
         rho = torch.ones(bsz, dtype=dtype, device=device)
         for gk, indices in group_located.items():
             if not group_eligible[gk]:
@@ -1094,11 +1102,17 @@ def compute_prob_weighted_think_action_advantages(
             if p_bar <= 1e-9:
                 continue
             for i in indices:
-                rho[i] = max(clip_min, min(clip_max, action_probs[i].item() / p_bar))
+                r = action_probs[i].item() / p_bar
+                rho[i] = max(clip_min, min(clip_max, r)) if do_clip else r
 
         # ---- final per-step advantages with fallbacks ----
         think_adv = torch.zeros(bsz, dtype=dtype, device=device)
         act_adv = torch.zeros(bsz, dtype=dtype, device=device)
+        # Steps that actually got the split. Used to filter the rho statistics:
+        # a split step whose ratio happens to equal 1.0 (p_i == p_bar) must stay
+        # in the distribution -- rho != 1 cannot distinguish it from the initial
+        # value used by fallback steps.
+        split_mask = np.zeros(bsz, dtype=bool)
         n_split = 0
         n_unlocated = 0
         n_singleton_action = 0
@@ -1117,6 +1131,7 @@ def compute_prob_weighted_think_action_advantages(
                     and subgroup_eligible.get(sg, False)):
                 think_adv[i] = rho[i] * public_adv[i]
                 act_adv[i] = public_adv[i]
+                split_mask[i] = True
                 n_split += 1
             else:
                 if not located[i]:
@@ -1128,11 +1143,43 @@ def compute_prob_weighted_think_action_advantages(
                 think_adv[i] = a_raw[i]
                 act_adv[i] = a_raw[i]
 
+        # ---- rho distribution for diagnostics / clip-bound selection ----
+        # Filter by split_mask (steps that actually got the split), NOT by
+        # rho != 1: a split step with p_i == p_bar has rho exactly 1.0 and would
+        # otherwise be dropped from the distribution.
+        rho_stats: Dict[str, float] = {}
+        if n_split > 0:
+            rho_np = rho.cpu().numpy()
+            split_rho = rho_np[split_mask]
+            rho_stats = {
+                "n_split": float(n_split),
+                "clip_min": float('nan') if clip_min is None else float(clip_min),
+                "clip_max": float('nan') if clip_max is None else float(clip_max),
+            }
+            if len(split_rho) > 0:
+                pcts = np.percentile(split_rho, [1, 5, 50, 95, 99])
+                rho_stats.update({
+                    "min": float(split_rho.min()),
+                    "p1": float(pcts[0]),
+                    "p5": float(pcts[1]),
+                    "p50": float(pcts[2]),
+                    "p95": float(pcts[3]),
+                    "p99": float(pcts[4]),
+                    "max": float(split_rho.max()),
+                    "mean": float(split_rho.mean()),
+                })
+            if do_clip:
+                rho_stats["n_clipped_low"] = float((rho_np[split_mask] <= clip_min + 1e-6).sum())
+                rho_stats["n_clipped_high"] = float((rho_np[split_mask] >= clip_max - 1e-6).sum())
+            else:
+                rho_stats["n_clipped_low"] = 0.0
+                rho_stats["n_clipped_high"] = 0.0
+
         if summarize:
             rho_np = rho.cpu().numpy()
-            split_rho = rho_np[np.abs(rho_np - 1.0) > 1e-9]  # rho != 1 means it was computed
-            n_clip_low = int((rho_np <= clip_min + 1e-6).sum())
-            n_clip_high = int((rho_np >= clip_max - 1e-6).sum())
+            split_rho = rho_np[split_mask]
+            n_clip_low = int((rho_np[split_mask] <= clip_min + 1e-6).sum()) if do_clip else 0
+            n_clip_high = int((rho_np[split_mask] >= clip_max - 1e-6).sum()) if do_clip else 0
             print(f"\n[WiGPO Prob-Weighted Think/Action Advantages]")
             print(f"  Action groups: {len(group_all)} "
                   f"({sum(1 for v in group_eligible.values() if v)} eligible for split)")
@@ -1143,14 +1190,19 @@ def compute_prob_weighted_think_action_advantages(
             print(f"    - subgroup with a single valid action category: {n_single_action_subgroup}")
             print(f"    - invalid action: {n_invalid}")
             if len(split_rho) > 0:
+                pcts = np.percentile(split_rho, [1, 5, 50, 95, 99])
                 print(f"  rho (split steps only) stats: "
-                      f"mean={split_rho.mean():.3f}, "
-                      f"min={split_rho.min():.3f}, "
-                      f"max={split_rho.max():.3f}")
-            print(f"  rho clipped at [{clip_min}, {clip_max}]: "
-                  f"{n_clip_low + n_clip_high} / {bsz}")
+                      f"min={split_rho.min():.3f} p1={pcts[0]:.3f} p5={pcts[1]:.3f} "
+                      f"p50={pcts[2]:.3f} p95={pcts[3]:.3f} p99={pcts[4]:.3f} "
+                      f"max={split_rho.max():.3f} mean={split_rho.mean():.3f}")
+            if do_clip:
+                print(f"  rho clipped at [{clip_min}, {clip_max}]: "
+                      f"{n_clip_low + n_clip_high} / {bsz}")
+            else:
+                print(f"  rho clipping DISABLED (collect mode): "
+                      f"raw ratios kept, clip bounds not applied")
 
-    return think_adv, act_adv
+    return think_adv, act_adv, rho_stats
 
 
 # ---------------------------------------------------------- #
@@ -1204,6 +1256,14 @@ def compute_wigpo_outcome_advantage(token_level_rewards: torch.Tensor,
        contaminates the p_bar of its action category.
 
     The obs-cluster ``step_adv`` term always uses the raw, unaggregated step rewards.
+
+    Returns:
+        scores: shape (bsz, L), the joint advantage broadcast to token level
+            (returns ``(scores, scores)`` for compatibility with GiGPO).
+        wigpo_rho_stats: dict with the rho distribution of split steps
+            (min/max/mean, p1/p5/p50/p95/p99, clip counts). Empty when the
+            probability-weighted split is not in use. Clip bounds of None mean
+            collect mode: raw ratios kept, distribution measured.
     """
     if mode == "mean_std_norm":
         remove_std = False
@@ -1242,7 +1302,7 @@ def compute_wigpo_outcome_advantage(token_level_rewards: torch.Tensor,
         action_probs = compute_action_probs(old_log_probs, action_token_mask, response_mask)
 
         # Compute think and action advantages
-        think_adv, act_adv = compute_prob_weighted_think_action_advantages(
+        think_adv, act_adv, rho_stats = compute_prob_weighted_think_action_advantages(
             step_rewards=step_rewards,
             subgroup_uids=subgroup_uids,
             action_keys=action_keys,
@@ -1254,6 +1314,8 @@ def compute_wigpo_outcome_advantage(token_level_rewards: torch.Tensor,
             clip_max=prob_reweight_clip_max,
             summarize=True,
         )
+        # rho distribution (split steps) for trainer metrics / clip-bound choice
+        wigpo_rho_stats = rho_stats
 
         # Broadcast to token level. For fallback steps think_adv == act_adv ==
         # A_raw, so every valid token receives the same raw advantage regardless
@@ -1270,6 +1332,7 @@ def compute_wigpo_outcome_advantage(token_level_rewards: torch.Tensor,
 
     elif action_keys is not None:
         # Action-group aggregation without probability weighting
+        wigpo_rho_stats = {}
         subgroup_step_rewards = aggregate_action_group_rewards(
             step_rewards, subgroup_uids, action_keys, summarize=True
         )
@@ -1279,6 +1342,7 @@ def compute_wigpo_outcome_advantage(token_level_rewards: torch.Tensor,
         )
     else:
         # No action grouping: plain subgroup advantage
+        wigpo_rho_stats = {}
         subgroup_advantages = core_gigpo.step_norm_reward(
             step_rewards, response_mask, subgroup_uids, epsilon, remove_std
         )
@@ -1287,4 +1351,4 @@ def compute_wigpo_outcome_advantage(token_level_rewards: torch.Tensor,
     scores = (episode_advantages
               + step_advantage_w * step_advantages
               + subgroup_advantage_w * subgroup_advantages)
-    return scores, scores
+    return scores, scores, wigpo_rho_stats

@@ -30,6 +30,9 @@ action_group_agg=True
 # where p_i is the model's probability for the action after this step's think.
 # Requires action_group_agg=True.
 use_prob_reweight=False
+# rho_i clip bounds for the prob-weighted split. Empty (or null) = collect mode:
+# no clipping is applied and the raw p_i/p_bar ratio distribution is logged to
+# wandb (gigpo/rho_*) so you can pick bounds from data for the real run.
 prob_reweight_clip_min=0.5  # min value for rho_i scaling factor
 prob_reweight_clip_max=1.5  # max value for rho_i scaling factor
 # reverse_decay_from_step_split: Each step gets reward from its OWN milestone + every LATER
@@ -96,8 +99,8 @@ python3 -m verl.trainer.main_ppo \
     algorithm.gigpo.subgroup_advantage_w=1.0 \
     algorithm.gigpo.action_group_agg=$action_group_agg \
     algorithm.gigpo.use_prob_reweight=$use_prob_reweight \
-    algorithm.gigpo.prob_reweight_clip_min=$prob_reweight_clip_min \
-    algorithm.gigpo.prob_reweight_clip_max=$prob_reweight_clip_max \
+    algorithm.gigpo.prob_reweight_clip_min=${prob_reweight_clip_min:-null} \
+    algorithm.gigpo.prob_reweight_clip_max=${prob_reweight_clip_max:-null} \
     algorithm.gigpo.milestone_threshold=0.95 \
     algorithm.gigpo.milestone_path=$milestone_path \
     algorithm.gigpo.mode=$mode \
