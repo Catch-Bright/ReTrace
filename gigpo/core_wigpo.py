@@ -902,23 +902,34 @@ def build_action_token_mask(responses: torch.Tensor,
 
 def compute_action_probs(old_log_probs: torch.Tensor,
                          action_token_mask: torch.Tensor,
-                         response_mask: torch.Tensor) -> torch.Tensor:
+                         response_mask: torch.Tensor,
+                         temperature: float = 1.0) -> torch.Tensor:
     """
-    Compute the average log-probability of action tokens for each step.
+    Compute the temperature-scaled average log-probability of action tokens.
 
     For each step i, compute:
-        p_i = exp((1/|a_i|) * sum_{j in action tokens} log π_old(y_{i,j}))
+        p_i = exp((1 / (T * |a_i|)) * sum_{j in action tokens} log π_old(y_{i,j}))
 
     This represents how much the think part supports the actual action taken.
+
+    The temperature T only rescales the log-probability, so it does not change
+    the ordering of p_i within a subgroup -- it controls how far the downstream
+    ratio rho_i = p_i / p_bar spreads away from 1. Large T flattens every ratio
+    toward 1 (weaker reweighting); small T sharpens the spread (stronger
+    reweighting). T = 1 reproduces the untempered formula.
 
     Args:
         old_log_probs: per-token log probabilities from π_old, shape (bsz, seq_len)
         action_token_mask: binary mask for action tokens, shape (bsz, seq_len)
         response_mask: binary mask for valid tokens, shape (bsz, seq_len)
+        temperature: T in the formula above, must be > 0. Defaults to 1.0.
 
     Returns:
         action_probs: shape (bsz,), the probability p_i for each step
     """
+    if temperature is None or temperature <= 0:
+        raise ValueError(
+            f"compute_action_probs: temperature must be > 0, got {temperature}")
     with torch.no_grad():
         # Mask to select only action tokens
         action_mask = action_token_mask * response_mask
@@ -929,8 +940,8 @@ def compute_action_probs(old_log_probs: torch.Tensor,
         # Number of action tokens per step
         action_token_count = action_mask.sum(dim=-1).clamp(min=1.0)  # avoid division by zero
 
-        # Average log prob over action tokens
-        avg_action_log_prob = action_log_sum / action_token_count
+        # Average log prob over action tokens, scaled by the temperature
+        avg_action_log_prob = action_log_sum / (action_token_count * temperature)
 
         # Convert to probability
         action_probs = torch.exp(avg_action_log_prob)
@@ -1228,6 +1239,7 @@ def compute_wigpo_outcome_advantage(token_level_rewards: torch.Tensor,
                                     old_log_probs: torch.Tensor = None,
                                     prob_reweight_clip_min: float = 0.5,
                                     prob_reweight_clip_max: float = 1.5,
+                                    prob_reweight_temperature: float = 1.0,
                                     ):
     """
     Compute WiGPO advantages: GiGPO refined by subtask-segment subgroups.
@@ -1264,6 +1276,13 @@ def compute_wigpo_outcome_advantage(token_level_rewards: torch.Tensor,
             (min/max/mean, p1/p5/p50/p95/p99, clip counts). Empty when the
             probability-weighted split is not in use. Clip bounds of None mean
             collect mode: raw ratios kept, distribution measured.
+
+    ``prob_reweight_temperature`` is the T in
+    ``p_i = exp(sum_j log pi_old(y_j) / (T * |a_i|))``. It rescales the action
+    log-probability before the ratio ``rho_i = p_i / p_bar`` is formed, so it
+    controls how wide that ratio spreads: T > 1 pulls the ratios toward 1
+    (weaker reweighting), T < 1 pushes them apart (stronger). T = 1 is the
+    untempered behaviour.
     """
     if mode == "mean_std_norm":
         remove_std = False
@@ -1299,7 +1318,8 @@ def compute_wigpo_outcome_advantage(token_level_rewards: torch.Tensor,
         # categories / subgroups, per the fallback rules) use A_raw instead.
 
         # Compute action probabilities
-        action_probs = compute_action_probs(old_log_probs, action_token_mask, response_mask)
+        action_probs = compute_action_probs(old_log_probs, action_token_mask, response_mask,
+                                            temperature=prob_reweight_temperature)
 
         # Compute think and action advantages
         think_adv, act_adv, rho_stats = compute_prob_weighted_think_action_advantages(

@@ -262,6 +262,7 @@ algorithm:
     use_prob_reweight: False # if True, use probability-weighted think/action advantage split (requires action_group_agg=True)
     prob_reweight_clip_min: 0.5 # minimum value for rho_i scaling factor; null disables clipping (collect mode: raw ratios kept, distribution logged to wandb)
     prob_reweight_clip_max: 1.5 # maximum value for rho_i scaling factor; null disables clipping (collect mode)
+    prob_reweight_temperature: 1.0 # T in p_i = exp(sum_j log pi_old(y_j) / (T * |a_i|)); >1 pulls rho_i toward 1 (weaker reweight), <1 spreads it (stronger). 1.0 = untempered
     # ---- WiGPO subtask-shaped step reward (replaces GiGPO discounted-return step_rewards) ----
     use_subtask_shaped_reward: True # if False, WiGPO keeps GiGPO's discounted-return step_rewards
     subtask_reward_max: 10.0 # total task reward R_max, split equally over the task's milestones

@@ -243,7 +243,7 @@ def compute_response_mask(data: DataProto):
     return attention_mask[:, -response_length:]
 
 
-def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_repeat=1, multi_turn=False, norm_adv_by_std_in_grpo=True, step_advantage_w=1.0, gigpo_mode="mean_std_norm", gigpo_enable_similarity=False, gigpo_similarity_thresh=0.95, subgroup_advantage_w=1.0, milestone_threshold=0.85, milestone_path=None, action_group_agg=False, use_prob_reweight=False, prob_reweight_clip_min=0.5, prob_reweight_clip_max=1.5, tokenizer=None, **kwargs):
+def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_repeat=1, multi_turn=False, norm_adv_by_std_in_grpo=True, step_advantage_w=1.0, gigpo_mode="mean_std_norm", gigpo_enable_similarity=False, gigpo_similarity_thresh=0.95, subgroup_advantage_w=1.0, milestone_threshold=0.85, milestone_path=None, action_group_agg=False, use_prob_reweight=False, prob_reweight_clip_min=0.5, prob_reweight_clip_max=1.5, prob_reweight_temperature=1.0, tokenizer=None, **kwargs):
     """Compute advantage estimates for policy optimization.
 
     This function computes advantage estimates using various estimators like GAE, GRPO, REINFORCE++, etc.
@@ -421,6 +421,7 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
             old_log_probs=old_log_probs,
             prob_reweight_clip_min=prob_reweight_clip_min,
             prob_reweight_clip_max=prob_reweight_clip_max,
+            prob_reweight_temperature=prob_reweight_temperature,
             )
         data.batch['advantages'] = advantages
         data.batch['returns'] = returns
@@ -1348,6 +1349,7 @@ class RayPPOTrainer:
                             use_prob_reweight=self.config.algorithm.gigpo.get('use_prob_reweight', False),
                             prob_reweight_clip_min=self.config.algorithm.gigpo.get('prob_reweight_clip_min', 0.5),
                             prob_reweight_clip_max=self.config.algorithm.gigpo.get('prob_reweight_clip_max', 1.5),
+                            prob_reweight_temperature=self.config.algorithm.gigpo.get('prob_reweight_temperature', 1.0),
                             tokenizer=self.tokenizer,
                         )
 
