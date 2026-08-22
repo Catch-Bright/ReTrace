@@ -33,6 +33,10 @@ use_prob_reweight=True
 # wandb (gigpo/rho_*) so you can pick bounds from data for the real run.
 prob_reweight_clip_min=  # min value for rho_i scaling factor
 prob_reweight_clip_max=  # max value for rho_i scaling factor
+# Temperature T in p_i = exp(sum_j log pi_old(y_j) / (T * |a_i|)). Controls how far
+# rho_i = p_i/p_bar spreads from 1: T>1 flattens toward 1 (weaker reweight), T<1
+# sharpens (stronger). 1.0 = untempered.
+prob_reweight_temperature=1.0
 # Subtask-shaped step reward mode. Switch freely between:
 #   "reverse_decay"                  : BEACON-style. Each step only gets its OWN milestone's
 #                                      terminal reward, reverse-decayed: gamma^(e_s - i) * r_max.
@@ -116,6 +120,7 @@ python3 -m verl.trainer.main_ppo \
     algorithm.gigpo.use_prob_reweight=$use_prob_reweight \
     algorithm.gigpo.prob_reweight_clip_min=${prob_reweight_clip_min:-null} \
     algorithm.gigpo.prob_reweight_clip_max=${prob_reweight_clip_max:-null} \
+    algorithm.gigpo.prob_reweight_temperature=$prob_reweight_temperature \
     algorithm.gigpo.mode=$mode \
     algorithm.gigpo.use_subtask_shaped_reward=True \
     algorithm.gigpo.subtask_reward_mode=$subtask_reward_mode \
