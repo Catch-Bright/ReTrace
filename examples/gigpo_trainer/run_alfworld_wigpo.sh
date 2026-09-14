@@ -29,12 +29,12 @@ action_group_agg=True
 #   - Different think advantages scaled by p_i/p_bar (think tokens learn "how much do I support it?")
 # where p_i is the model's probability for the action after this step's think.
 # Requires action_group_agg=True.
-use_prob_reweight=False
+use_prob_reweight=True
 # rho_i clip bounds for the prob-weighted split. Empty (or null) = collect mode:
 # no clipping is applied and the raw p_i/p_bar ratio distribution is logged to
 # wandb (gigpo/rho_*) so you can pick bounds from data for the real run.
-prob_reweight_clip_min=0.5  # min value for rho_i scaling factor
-prob_reweight_clip_max=1.5  # max value for rho_i scaling factor
+prob_reweight_clip_min=  # min value for rho_i scaling factor
+prob_reweight_clip_max=  # max value for rho_i scaling factor
 # Temperature T in p_i = exp(sum_j log pi_old(y_j) / (T * |a_i|)). Controls how far
 # rho_i = p_i/p_bar spreads from 1: T>1 flattens toward 1 (weaker reweight), T<1
 # sharpens (stronger). 1.0 = untempered.
@@ -129,10 +129,10 @@ python3 -m verl.trainer.main_ppo \
     trainer.critic_warmup=0 \
     trainer.logger=['console','wandb'] \
     trainer.project_name='verl_agent_alfworld' \
-    trainer.experiment_name='wigpo_qwen2.5_1.5b-rw4' \
+    trainer.experiment_name='wigpo_qwen2.5_1.5b-rw4-actgrewight' \
     trainer.n_gpus_per_node=8 \
     trainer.nnodes=1 \
     trainer.save_freq=-1 \
     trainer.test_freq=5 \
-    trainer.total_epochs=150 \
+    trainer.total_epochs=160 \
     trainer.val_before_train=True $@
