@@ -1,0 +1,85 @@
+set -x
+ENGINE=${1:-vllm}
+ulimit -u 65536
+export VLLM_ATTENTION_BACKEND=FLASH_ATTN
+export HF_HOME=/var/gfs/wangyuhao/hf_cache
+export HF_DATASETS_CACHE=/var/gfs/wangyuhao/hf_cache/datasets
+export HF_HUB_OFFLINE=1
+export HF_DATASETS_OFFLINE=1
+
+num_cpus_per_env_worker=0.1 # The CPU resource allocated for each environment worker. If you want to use less CPU resources, you can decrease this value.
+ray_num_cpus=${RAY_NUM_CPUS:-64}
+
+train_data_size=16
+val_data_size=128
+group_size=8
+mode="mean_norm" # "mean_norm" or "mean_std_norm"
+
+# Read-only WiGPO diagnostics on this plain GiGPO run.
+# Collected at global steps 5, 10, 15, ... and written to JSONL.
+wigpo_diag_freq=5
+wigpo_diag_path=logs/wigpo_diag/gigpo_webshop_qwen2.5_1.5b_figure1.jsonl
+
+# We only use data preparation to indicate the modality and the data size.
+python3 -m examples.data_preprocess.prepare \
+    --mode 'text' \
+    --train_data_size $train_data_size \
+    --val_data_size $((val_data_size * 2)) # evaluate 2 × val_data_size tasks during each iteration
+
+python3 -m verl.trainer.main_ppo \
+    algorithm.adv_estimator=gigpo \
+    ray_init.num_cpus=$ray_num_cpus \
+    data.train_files=$HOME/data/verl-agent/text/train.parquet \
+    data.val_files=$HOME/data/verl-agent/text/test.parquet \
+    data.train_batch_size=$train_data_size \
+    data.val_batch_size=$val_data_size \
+    data.max_prompt_length=4096 \
+    data.max_response_length=512 \
+    data.filter_overlong_prompts=True \
+    data.truncation='error' \
+    data.return_raw_chat=True \
+    actor_rollout_ref.model.path=/var/gfs/wangyuhao/model/qwen2.5_1_5b_instruct \
+    actor_rollout_ref.actor.optim.lr=1e-6 \
+    actor_rollout_ref.model.use_remove_padding=True \
+    actor_rollout_ref.actor.ppo_mini_batch_size=64 \
+    actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=8 \
+    actor_rollout_ref.actor.use_kl_loss=True \
+    actor_rollout_ref.actor.kl_loss_coef=0.01 \
+    actor_rollout_ref.actor.kl_loss_type=low_var_kl \
+    actor_rollout_ref.model.enable_gradient_checkpointing=True \
+    actor_rollout_ref.actor.fsdp_config.param_offload=False \
+    actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
+    actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=16 \
+    actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
+    actor_rollout_ref.rollout.name=$ENGINE \
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.7 \
+    actor_rollout_ref.rollout.enable_chunked_prefill=False \
+    actor_rollout_ref.rollout.enforce_eager=False \
+    actor_rollout_ref.rollout.free_cache_engine=False \
+    actor_rollout_ref.rollout.val_kwargs.temperature=0.4 \
+    actor_rollout_ref.rollout.val_kwargs.do_sample=True \
+    actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=16 \
+    actor_rollout_ref.ref.fsdp_config.param_offload=True \
+    actor_rollout_ref.actor.use_invalid_action_penalty=True \
+    actor_rollout_ref.actor.invalid_action_penalty_coef=0.1 \
+    algorithm.use_kl_in_reward=False \
+    algorithm.gamma=0.95 \
+    algorithm.gigpo.step_advantage_w=1.0 \
+    algorithm.gigpo.mode=$mode \
+    algorithm.gigpo.wigpo_diag_freq=$wigpo_diag_freq \
+    algorithm.gigpo.wigpo_diag_path=$wigpo_diag_path \
+    env.env_name=Webshop \
+    env.seed=0 \
+    env.max_steps=15 \
+    env.rollout.n=$group_size \
+    env.resources_per_worker.num_cpus=$num_cpus_per_env_worker \
+    trainer.critic_warmup=0 \
+    trainer.logger=['console','wandb'] \
+    trainer.project_name='verl_agent_webshop' \
+    trainer.experiment_name='gigpo_qwen2.5_1.5b_figure1' \
+    trainer.n_gpus_per_node=8 \
+    trainer.nnodes=1 \
+    trainer.save_freq=-1 \
+    trainer.test_freq=5 \
+    trainer.total_epochs=150 \
+    trainer.val_before_train=True $@

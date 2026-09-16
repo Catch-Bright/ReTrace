@@ -257,7 +257,12 @@ class TrajectoryCollector:
         success_rate = {}
         for key, value in success.items():
             success_rate[key] = np.mean(value)
-        
+
+        # Per-trajectory outcome (`success_rate` above is the batch mean, so it
+        # cannot tell a single trajectory's fate). Kept per step so downstream
+        # diagnostics can split steps by whether their episode was won.
+        traj_won = success.get('success_rate', None)
+
         effective_batch = []
         for bs in range(batch_size):
             # sum the rewards for each data in total_batch_list[bs]
@@ -270,6 +275,9 @@ class TrajectoryCollector:
                     data['episode_lengths'] = episode_lengths[bs]
                     # tool_callings
                     data['tool_callings'] = tool_callings[bs]
+                    # this trajectory's own outcome (1.0 = won)
+                    if traj_won is not None and len(traj_won) == batch_size:
+                        data['traj_won'] = float(traj_won[bs])
                     # success_rate
                     for key, value in success_rate.items():
                         data[key] = value

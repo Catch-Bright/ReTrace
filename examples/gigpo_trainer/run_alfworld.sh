@@ -1,9 +1,9 @@
 set -x
 ENGINE=${1:-vllm}
 export VLLM_ATTENTION_BACKEND=FLASH_ATTN
-export ALFWORLD_DATA=/itdd-pfs/wangyuhao/data/alfworld
-export HF_HOME=/itdd-pfs/wangyuhao/hf_cache
-export HF_DATASETS_CACHE=/itdd-pfs/wangyuhao/hf_cache/datasets
+export ALFWORLD_DATA=/root/.cache/alfworld
+export HF_HOME=/var/gfs/wangyuhao/hf_cache
+export HF_DATASETS_CACHE=/var/gfs/wangyuhao/hf_cache/datasets
 export HF_HUB_OFFLINE=1
 export HF_DATASETS_OFFLINE=1
 
@@ -13,7 +13,7 @@ train_data_size=16
 val_data_size=128
 group_size=8
 mode="mean_std_norm" # "mean_norm" or "mean_std_norm"
-model_path=/itdd-pfs/wangyuhao/model/qwen2.5_1_5b_instruct
+model_path=/var/gfs/wangyuhao/model/qwen2.5_1_5b_instruct
 
 # We only use data preparation to indicate the modality and the data size.
 python3 -m examples.data_preprocess.prepare \
@@ -49,9 +49,9 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.fsdp_config.param_offload=False \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=32 \
-    actor_rollout_ref.rollout.tensor_model_parallel_size=2 \
+    actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
     actor_rollout_ref.rollout.name=$ENGINE \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.7 \
     actor_rollout_ref.rollout.enable_chunked_prefill=False \
     actor_rollout_ref.rollout.enforce_eager=False \
     actor_rollout_ref.rollout.free_cache_engine=False \
@@ -73,8 +73,8 @@ python3 -m verl.trainer.main_ppo \
     trainer.critic_warmup=0 \
     trainer.logger=['console','wandb'] \
     trainer.project_name='verl_agent_alfworld' \
-    trainer.experiment_name='gigpo_qwen2.5_1.5b' \
-    trainer.n_gpus_per_node=2 \
+    trainer.experiment_name='gigpo_qwen2.5_1.5b_figure1' \
+    trainer.n_gpus_per_node=8 \
     trainer.nnodes=1 \
     trainer.save_freq=-1 \
     trainer.test_freq=5 \

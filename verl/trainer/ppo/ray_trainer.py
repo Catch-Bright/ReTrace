@@ -62,6 +62,7 @@ from verl.utils.tracking import ValidationGenerationsLogger
 from verl.workers.rollout.async_server import AsyncLLMServerManager
 from gigpo import core_gigpo
 from gigpo import core_wigpo
+from gigpo import wigpo_diagnostics
 
 from agent_system.multi_turn_rollout import TrajectoryCollector, adjust_batch
 
@@ -1184,6 +1185,29 @@ class RayPPOTrainer:
                             gamma=self.config.algorithm.gamma
                         )
                         batch.batch['step_rewards'] = step_rewards_tensor
+
+                    # WiGPO diagnostics on a plain GiGPO run: how many step groups
+                    # mix subtask stages, and how much real progress inside failed
+                    # trajectories GiGPO leaves uncredited. Instrumentation only --
+                    # it reads the batch and never modifies rewards or advantages.
+                    # Run here so step order within each trajectory is still intact
+                    # and adjust_batch has not duplicated any steps yet.
+                    wigpo_diag_freq = self.config.algorithm.gigpo.get('wigpo_diag_freq', 0)
+                    if (self.config.algorithm.adv_estimator == AdvantageEstimator.GiGPO
+                            and wigpo_diag_freq > 0
+                            and self.global_steps % wigpo_diag_freq == 0):
+                        with _timer("wigpo_diag", timing_raw):
+                            diag_stats = wigpo_diagnostics.compute_wigpo_repair_stats(
+                                batch=batch,
+                                enable_similarity=self.config.algorithm.gigpo.enable_similarity,
+                                similarity_thresh=self.config.algorithm.gigpo.similarity_thresh,
+                            )
+                            wigpo_diagnostics.log_wigpo_repair_stats(
+                                stats=diag_stats,
+                                global_step=self.global_steps,
+                                path=self.config.algorithm.gigpo.get('wigpo_diag_path', None),
+                            )
+                            metrics.update(diag_stats)
 
                     if self.config.algorithm.adv_estimator == AdvantageEstimator.WiGPO:
                         # Compute subtask segment metadata while step order within each
