@@ -2,12 +2,13 @@ set -x
 ENGINE=${1:-vllm}
 export VLLM_ATTENTION_BACKEND=FLASH_ATTN
 export ALFWORLD_DATA=/root/.cache/alfworld
-export HF_HOME=/var/gfs/wangyuhao/hf_cache
-export HF_DATASETS_CACHE=/var/gfs/wangyuhao/hf_cache/datasets
+export HF_HOME=/var/gfs/BaseLLM/wangyuhao/hf_cache
+export HF_DATASETS_CACHE=/var/gfs/BaseLLM/wangyuhao/hf_cache/datasets
 export HF_HUB_OFFLINE=1
 export HF_DATASETS_OFFLINE=1
 
 num_cpus_per_env_worker=0.1 # The CPU resource allocated for each environment worker.
+ray_num_cpus=${RAY_NUM_CPUS:-64}
 
 train_data_size=16
 val_data_size=128
@@ -43,7 +44,7 @@ prob_reweight_temperature=1.0
 # completed milestone, with discount measured from THIS step i: gamma^(e_s - i) + sum_j gamma^(e_j - i).
 # Each milestone contributes r_max/M. Completing all M gives max reward = r_max.
 subtask_reward_mode="reverse_decay_from_step_split"
-model_path=/var/gfs/wangyuhao/model/qwen2.5_1_5b_instruct
+model_path=/var/gfs/BaseLLM/wangyuhao/model/qwen2.5_1_5b_instruct
 
 # WiGPO: segment-refined GiGPO for ALFWorld.
 #
@@ -73,6 +74,7 @@ python3 -m examples.data_preprocess.prepare \
 
 python3 -m verl.trainer.main_ppo \
     algorithm.adv_estimator=wigpo \
+    ray_init.num_cpus=$ray_num_cpus \
     data.train_files=$HOME/data/verl-agent/text/train.parquet \
     data.val_files=$HOME/data/verl-agent/text/test.parquet \
     data.train_batch_size=$train_data_size \
@@ -107,7 +109,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.use_invalid_action_penalty=True \
     actor_rollout_ref.actor.invalid_action_penalty_coef=0.1 \
     algorithm.use_kl_in_reward=False \
-    algorithm.gamma=0.95 \
+    algorithm.gamma=0.9 \
     algorithm.gigpo.step_advantage_w=0 \
     algorithm.gigpo.subgroup_advantage_w=1.0 \
     algorithm.gigpo.action_group_agg=$action_group_agg \
@@ -121,7 +123,7 @@ python3 -m verl.trainer.main_ppo \
     algorithm.gigpo.use_subtask_shaped_reward=True \
     algorithm.gigpo.subtask_reward_mode=$subtask_reward_mode \
     env.env_name=alfworld/AlfredTWEnv \
-    env.seed=0 \
+    env.seed=1 \
     env.max_steps=50 \
     env.alfworld.use_milestone_detector=True \
     env.rollout.n=$group_size \
@@ -129,10 +131,10 @@ python3 -m verl.trainer.main_ppo \
     trainer.critic_warmup=0 \
     trainer.logger=['console','wandb'] \
     trainer.project_name='verl_agent_alfworld' \
-    trainer.experiment_name='wigpo_qwen2.5_1.5b-rw4-actgrewight' \
+    trainer.experiment_name='wigpo_qwen2.5_1.5b-rw4-actgrewight-seed1' \
     trainer.n_gpus_per_node=8 \
     trainer.nnodes=1 \
     trainer.save_freq=-1 \
     trainer.test_freq=5 \
-    trainer.total_epochs=160 \
+    trainer.total_epochs=150 \
     trainer.val_before_train=True $@

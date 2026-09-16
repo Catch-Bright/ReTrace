@@ -2,8 +2,8 @@ set -x
 ENGINE=${1:-vllm}
 export VLLM_ATTENTION_BACKEND=FLASH_ATTN
 export ALFWORLD_DATA=/root/.cache/alfworld
-export HF_HOME=/var/gfs/wangyuhao/hf_cache
-export HF_DATASETS_CACHE=/var/gfs/wangyuhao/hf_cache/datasets
+export HF_HOME=/var/gfs/BaseLLM/wangyuhao/hf_cache
+export HF_DATASETS_CACHE=/var/gfs/BaseLLM/wangyuhao/hf_cache/datasets
 export HF_HUB_OFFLINE=1
 export HF_DATASETS_OFFLINE=1
 
@@ -44,7 +44,7 @@ prob_reweight_temperature=1.0
 # completed milestone, with discount measured from THIS step i: gamma^(e_s - i) + sum_j gamma^(e_j - i).
 # Each milestone contributes r_max/M. Completing all M gives max reward = r_max.
 subtask_reward_mode="reverse_decay_from_step_split"
-model_path=/var/gfs/wangyuhao/model/qwen2.5_7b_instruct
+model_path=/var/gfs/BaseLLM/wangyuhao/model/qwen2.5_7b_instruct
 
 # WiGPO: segment-refined GiGPO for ALFWorld.
 #

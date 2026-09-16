@@ -3,8 +3,8 @@ set -x
 ENGINE=${1:-vllm}
 ulimit -u 65536
 export VLLM_ATTENTION_BACKEND=FLASH_ATTN
-export HF_HOME=/var/gfs/wangyuhao/hf_cache
-export HF_DATASETS_CACHE=/var/gfs/wangyuhao/hf_cache/datasets
+export HF_HOME=/var/gfs/BaseLLM/wangyuhao/hf_cache
+export HF_DATASETS_CACHE=/var/gfs/BaseLLM/wangyuhao/hf_cache/datasets
 export HF_HUB_OFFLINE=1
 export HF_DATASETS_OFFLINE=1
 
@@ -62,7 +62,7 @@ prob_reweight_temperature=1.0
 #                                      Completing all M gives max reward = r_max.
 #   "cumulative"                     : r_sub = r_max/M per subtask + geometric distance decay (beta).
 subtask_reward_mode="reverse_decay_from_step_split"
-model_path=/var/gfs/wangyuhao/model/qwen2.5_7b_instruct
+model_path=/var/gfs/BaseLLM/wangyuhao/model/qwen2.5_7b_instruct
 
 # WiGPO: segment-refined GiGPO for WebShop.
 # Unlike ALFWorld (static action anchor matching), WebShop uses dynamic milestone detection:

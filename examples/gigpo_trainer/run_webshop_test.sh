@@ -2,8 +2,8 @@ set -x
 ENGINE=${1:-vllm}
 ulimit -u 65536
 export VLLM_ATTENTION_BACKEND=FLASH_ATTN
-export HF_HOME=/var/gfs/wangyuhao/hf_cache
-export HF_DATASETS_CACHE=/var/gfs/wangyuhao/hf_cache/datasets
+export HF_HOME=/var/gfs/BaseLLM/wangyuhao/hf_cache
+export HF_DATASETS_CACHE=/var/gfs/BaseLLM/wangyuhao/hf_cache/datasets
 export HF_HUB_OFFLINE=1
 export HF_DATASETS_OFFLINE=1
 
@@ -38,7 +38,7 @@ python3 -m verl.trainer.main_ppo \
     data.filter_overlong_prompts=True \
     data.truncation='error' \
     data.return_raw_chat=True \
-    actor_rollout_ref.model.path=/var/gfs/wangyuhao/model/qwen2.5_1_5b_instruct \
+    actor_rollout_ref.model.path=/var/gfs/BaseLLM/wangyuhao/model/qwen2.5_1_5b_instruct \
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.actor.ppo_mini_batch_size=64 \

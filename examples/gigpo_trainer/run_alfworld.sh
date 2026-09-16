@@ -2,8 +2,8 @@ set -x
 ENGINE=${1:-vllm}
 export VLLM_ATTENTION_BACKEND=FLASH_ATTN
 export ALFWORLD_DATA=/root/.cache/alfworld
-export HF_HOME=/var/gfs/wangyuhao/hf_cache
-export HF_DATASETS_CACHE=/var/gfs/wangyuhao/hf_cache/datasets
+export HF_HOME=/var/gfs/BaseLLM/wangyuhao/hf_cache
+export HF_DATASETS_CACHE=/var/gfs/BaseLLM/wangyuhao/hf_cache/datasets
 export HF_HUB_OFFLINE=1
 export HF_DATASETS_OFFLINE=1
 
@@ -13,7 +13,7 @@ train_data_size=16
 val_data_size=128
 group_size=8
 mode="mean_std_norm" # "mean_norm" or "mean_std_norm"
-model_path=/var/gfs/wangyuhao/model/qwen2.5_1_5b_instruct
+model_path=/var/gfs/BaseLLM/wangyuhao/model/qwen2.5_1_5b_instruct
 
 # We only use data preparation to indicate the modality and the data size.
 python3 -m examples.data_preprocess.prepare \

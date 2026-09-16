@@ -3,13 +3,13 @@ set -x
 ENGINE=${1:-vllm}
 ulimit -u 65536
 export VLLM_ATTENTION_BACKEND=FLASH_ATTN
-export HF_HOME=/var/gfs/wangyuhao/hf_cache
-export HF_DATASETS_CACHE=/var/gfs/wangyuhao/hf_cache/datasets
+export HF_HOME=/var/gfs/BaseLLM/wangyuhao/hf_cache
+export HF_DATASETS_CACHE=/var/gfs/BaseLLM/wangyuhao/hf_cache/datasets
 export HF_HUB_OFFLINE=1
 export HF_DATASETS_OFFLINE=1
 
 num_cpus_per_env_worker=0.1 # The CPU resource allocated for each environment worker.
-ray_num_cpus=${RAY_NUM_CPUS:-64}
+
 
 train_data_size=16
 val_data_size=128
@@ -60,7 +60,7 @@ prob_reweight_temperature=1.0
 #                                      Completing all M gives max reward = r_max.
 #   "cumulative"                     : r_sub = r_max/M per subtask + geometric distance decay (beta).
 subtask_reward_mode="reverse_decay_from_step_split"
-model_path=/var/gfs/wangyuhao/model/qwen2.5_1_5b_instruct
+model_path=/var/gfs/BaseLLM/wangyuhao/model/qwen2.5_1_5b_instruct
 
 # WiGPO: segment-refined GiGPO for WebShop.
 # Unlike ALFWorld (static action anchor matching), WebShop uses dynamic milestone detection:
@@ -80,7 +80,6 @@ python3 -m examples.data_preprocess.prepare \
 
 python3 -m verl.trainer.main_ppo \
     algorithm.adv_estimator=wigpo \
-    ray_init.num_cpus=$ray_num_cpus \
     data.train_files=$HOME/data/verl-agent/text/train.parquet \
     data.val_files=$HOME/data/verl-agent/text/test.parquet \
     data.train_batch_size=$train_data_size \
@@ -104,7 +103,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=16 \
     actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
     actor_rollout_ref.rollout.name=$ENGINE \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.8 \
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.7 \
     actor_rollout_ref.rollout.enable_chunked_prefill=False \
     actor_rollout_ref.rollout.enforce_eager=False \
     actor_rollout_ref.rollout.free_cache_engine=False \
@@ -128,7 +127,7 @@ python3 -m verl.trainer.main_ppo \
     algorithm.gigpo.subtask_reward_mode=$subtask_reward_mode \
     algorithm.gigpo.subtask_decay_beta=0.5 \
     env.env_name=Webshop \
-    env.seed=0 \
+    env.seed=1 \
     env.max_steps=15 \
     env.rollout.n=$group_size \
     env.resources_per_worker.num_cpus=$num_cpus_per_env_worker \
@@ -140,5 +139,5 @@ python3 -m verl.trainer.main_ppo \
     trainer.nnodes=1 \
     trainer.save_freq=-1 \
     trainer.test_freq=5 \
-    trainer.total_epochs=160 \
+    trainer.total_epochs=150 \
     trainer.val_before_train=True $@
