@@ -9,7 +9,7 @@ export HF_HUB_OFFLINE=1
 export HF_DATASETS_OFFLINE=1
 
 num_cpus_per_env_worker=0.1 # The CPU resource allocated for each environment worker.
-
+ray_num_cpus=${RAY_NUM_CPUS:-64}
 
 train_data_size=16
 val_data_size=128
@@ -80,6 +80,7 @@ python3 -m examples.data_preprocess.prepare \
 
 python3 -m verl.trainer.main_ppo \
     algorithm.adv_estimator=wigpo \
+    ray_init.num_cpus=$ray_num_cpus \
     data.train_files=$HOME/data/verl-agent/text/train.parquet \
     data.val_files=$HOME/data/verl-agent/text/test.parquet \
     data.train_batch_size=$train_data_size \
