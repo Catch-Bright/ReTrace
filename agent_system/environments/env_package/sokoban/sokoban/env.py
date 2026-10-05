@@ -6,6 +6,7 @@ from agent_system.environments.env_package.sokoban.sokoban.room_utils import gen
 import copy
 
 from agent_system.environments.env_package.sokoban.sokoban.base import BaseDiscreteActionEnv
+from gigpo.sokoban_milestone_detector import SokobanMilestoneDetector
 
 class SokobanEnv(BaseDiscreteActionEnv, GymSokobanEnv):
 
@@ -36,6 +37,8 @@ class SokobanEnv(BaseDiscreteActionEnv, GymSokobanEnv):
         self.cur_seq = []
         self.action_sequence = []
         self.search_depth = kwargs.pop('search_depth', 300)
+        self.use_milestone_detector = kwargs.pop('use_milestone_detector', False)
+        self.milestone_detector = None
         self.mode = mode
         assert mode in ['tiny_rgb_array', 'list', 'state', 'rgb_array']
         GymSokobanEnv.__init__(
@@ -72,9 +75,16 @@ class SokobanEnv(BaseDiscreteActionEnv, GymSokobanEnv):
             self.player_position = np.argwhere(self.room_state == 5)[0]
             self.num_env_steps = self.reward_last = self.boxes_on_target = 0
 
+            if self.use_milestone_detector:
+                self.milestone_detector = SokobanMilestoneDetector(self.room_fixed, self.room_state)
+
             info = {
                 "won": False,
             }
+            if self.milestone_detector is not None:
+                info.update(milestone_achieved=False,
+                            milestone_phase=0,
+                            num_milestones=self.milestone_detector.num_milestones)
             return self.render(self.mode), info
         
 
@@ -92,7 +102,12 @@ class SokobanEnv(BaseDiscreteActionEnv, GymSokobanEnv):
         # assert not self.success()
 
         if action == self.INVALID_ACTION:
-            return self.render(self.mode), -0.1, False, {"action_is_effective": False, "won": False}
+            info = {"action_is_effective": False, "won": False}
+            if self.milestone_detector is not None:
+                info.update(milestone_achieved=False,
+                            milestone_phase=self.milestone_detector.phase,
+                            num_milestones=self.milestone_detector.num_milestones)
+            return self.render(self.mode), -0.1, False, info
         prev_player_position = self.player_position
         _, reward, done, _ = GymSokobanEnv.step(self, action, observation_mode=self.mode)
         
@@ -101,6 +116,11 @@ class SokobanEnv(BaseDiscreteActionEnv, GymSokobanEnv):
             "action_is_effective": not np.array_equal(prev_player_position, self.player_position),
             "won": self.success(),
         }
+        if self.milestone_detector is not None:
+            achieved = self.milestone_detector.process(self.room_state, info["won"])
+            info.update(milestone_achieved=achieved,
+                        milestone_phase=self.milestone_detector.phase,
+                        num_milestones=self.milestone_detector.num_milestones)
         return obs, reward, done, info
      
 
@@ -128,17 +148,27 @@ class SokobanEnv(BaseDiscreteActionEnv, GymSokobanEnv):
         
     def copy(self):
         new_self = SokobanEnv(
+            mode=self.mode,
             dim_room=self.dim_room,
             max_steps=self.max_steps,
             num_boxes=self.num_boxes,
-            search_depth=self.search_depth
+            search_depth=self.search_depth,
+            use_milestone_detector=self.use_milestone_detector,
         )
         new_self.room_fixed = self.room_fixed.copy()
         new_self.room_state = self.room_state.copy()
         new_self.box_mapping = self.box_mapping.copy()
         new_self.action_sequence = self.action_sequence.copy()
+        new_self.cur_seq = self.cur_seq.copy()
         new_self.player_position = self.player_position.copy()
+        new_self.num_env_steps = self.num_env_steps
+        new_self.reward_last = self.reward_last
+        new_self.boxes_on_target = self.boxes_on_target
         new_self.reward = self.reward
+        new_self.milestone_detector = copy.deepcopy(self.milestone_detector)
+        new_self._actions = copy.deepcopy(self._actions)
+        new_self._actions_valid = copy.deepcopy(self._actions_valid)
+        new_self._actions_effective = copy.deepcopy(self._actions_effective)
         new_self._valid_actions = copy.deepcopy(self._valid_actions)
         return new_self
     

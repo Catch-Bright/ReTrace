@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Prepare the existing /root overlay and point its editable install at this repo.
 set -euo pipefail
+tar_root=/
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 personal_root=$(cd -- "$repo_root/../.." && pwd -P)
 case "${1:-}" in
@@ -12,12 +13,17 @@ case "${1:-}" in
     archive="$personal_root/envs/alfworld-local-overlay-py312.tar.gz"
     env_dir=/root/envs/alfworld-uv-py312
     ;;
-  *) echo "Usage: bash $0 {webshop|alfworld}" >&2; exit 2 ;;
+  sokoban)
+    archive="$personal_root/envs/sokoban-local-overlay-py31020.tar.gz"
+    env_dir=/root/envs/sokoban-uv-py31020
+    tar_root=/root  # this archive stores paths as envs/... and software/... (no root/ prefix)
+    ;;
+  *) echo "Usage: bash $0 {webshop|alfworld|sokoban}" >&2; exit 2 ;;
 esac
 if [[ ! -x "$env_dir/bin/python" ]] || \
    [[ "${1}" == webshop && ! -x /root/software/jdk11/bin/java ]] || \
    [[ "${1}" == alfworld && ! -d /root/.cache/alfworld ]]; then
-  tar -xzf "$archive" -C /
+  tar -xzf "$archive" -C "$tar_root"
 fi
 "$env_dir/bin/python" - "$env_dir" "$personal_root" "$repo_root" <<'PYCODE'
 import pathlib, sys

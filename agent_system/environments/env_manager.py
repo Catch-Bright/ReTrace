@@ -284,6 +284,7 @@ class SokobanEnvironmentManager(EnvironmentManagerBase):
 
         for i, info in enumerate(infos):
             info['is_action_valid'] = to_numpy(valids[i])
+            info['action'] = self.ACTION_LOOKUP[actions[i]]
 
         self.memory.store({'text_obs': self.pre_text_obs, 'action': [self.ACTION_LOOKUP[act] for act in actions]})
         if self.is_multi_modal:
@@ -663,7 +664,8 @@ def make_envs(config):
             'dim_room': config.env.sokoban.dim_room,
             'num_boxes': config.env.sokoban.num_boxes,
             'max_steps': config.env.max_steps,
-            'search_depth': config.env.sokoban.search_depth
+            'search_depth': config.env.sokoban.search_depth,
+            'use_milestone_detector': config.env.sokoban.get('use_milestone_detector', False),
         }
         _envs = build_sokoban_envs(config.env.seed, config.data.train_batch_size, group_n, mode=config.env.sokoban.mode, is_train=True, env_kwargs=env_kwargs, resources_per_worker=resources_per_worker)
         _val_envs = build_sokoban_envs(config.env.seed + 1000, config.data.val_batch_size, 1, mode=config.env.sokoban.mode, is_train=False, env_kwargs=env_kwargs, resources_per_worker=resources_per_worker)
