@@ -31,6 +31,14 @@ class SokobanWorker:
     def step(self, action):
         """Execute a step in the environment"""
         obs, reward, done, info = self.env.step(action)
+
+        # Redefine reward. We only use rule-based reward - win for 10, lose for 0.
+        # This matches the terminal reward design used in ALFWorld and WebShop.
+        if done and info.get('won', False):
+            reward = 10.0
+        else:
+            reward = 0.0
+
         return obs, reward, done, info
     
     def reset(self, seed_for_reset):
