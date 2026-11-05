@@ -123,7 +123,7 @@ python3 -m verl.trainer.main_ppo \
     algorithm.gigpo.use_subtask_shaped_reward=True \
     algorithm.gigpo.subtask_reward_mode=$subtask_reward_mode \
     env.env_name=alfworld/AlfredTWEnv \
-    env.seed=2 \
+    env.seed=0 \
     env.max_steps=50 \
     env.alfworld.use_milestone_detector=True \
     env.rollout.n=$group_size \
@@ -131,10 +131,10 @@ python3 -m verl.trainer.main_ppo \
     trainer.critic_warmup=0 \
     trainer.logger=['console','wandb'] \
     trainer.project_name='verl_agent_alfworld' \
-    trainer.experiment_name='wigpo_qwen2.5_7b-rw4-actgrewight-seed2' \
+    trainer.experiment_name='wigpo_qwen2.5_7b-rw4-actgrewight-seed0' \
     trainer.n_gpus_per_node=8 \
     trainer.nnodes=1 \
-    trainer.save_freq=-1 \
+    trainer.save_freq=150 \
     trainer.test_freq=5 \
     trainer.total_epochs=150 \
     trainer.val_before_train=True $@
