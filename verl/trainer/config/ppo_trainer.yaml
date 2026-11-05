@@ -268,6 +268,8 @@ algorithm:
     subtask_reward_max: 10.0 # total task reward R_max, split equally over the task's milestones
     subtask_decay_beta: 0.5 # geometric decay beta^(j-s) for farther completed subtasks (0<beta<=1)
     subtask_reward_mode: "cumulative" # "cumulative" (default) or "reverse_decay" (BEACON-style)
+    # ---- Time breakdown profiling ----
+    enable_time_breakdown: False # seconds: time_breakdown/{Rollout,OldProb,RefProb,Update,AE,inter-step,intra-step,MeasuredTotal,TrainTotal,Other}; see examples/gigpo_trainer/COMPUTATIONAL_BUDGET.md
     # ---- WiGPO diagnostics on a plain GiGPO run (adv_estimator=gigpo); pure instrumentation ----
     wigpo_diag_freq: 0 # measure the WiGPO-repairable ratios every N iterations (0 = off, 5 = at iteration 5, 10, 15, ...); needs env.alfworld.use_milestone_detector=True
     wigpo_diag_path: null # optional JSONL file the per-iteration ratios are appended to; null -> only printed / logged to wandb

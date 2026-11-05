@@ -146,6 +146,7 @@ def compute_gigpo_outcome_advantage(token_level_rewards: torch.Tensor,
                                    mode: str = "mean_norm",
                                    enable_similarity: bool = False,
                                    similarity_thresh: float = 0.95,
+                                   time_breakdown=None,
                                    ):
     """
     Compute the advantages for GiGPO (https://arxiv.org/abs/2505.10978).
@@ -157,14 +158,19 @@ def compute_gigpo_outcome_advantage(token_level_rewards: torch.Tensor,
     else:
         raise ValueError(f"Unknown mode: {mode}")
     
-    # Compute episode relative advantages (Eq. 3 in the paper).
-    episode_advantages = episode_norm_reward(token_level_rewards, response_mask, index, traj_index, epsilon, remove_std)
+    from gigpo.budget import budget_timer
+
+    # Identical AE boundary for GiGPO and WiGPO, including token broadcast.
+    with budget_timer('AE', time_breakdown):
+        episode_advantages = episode_norm_reward(token_level_rewards, response_mask, index, traj_index, epsilon, remove_std)
     
     # Anchor state grouping (Eq. 6 in the paper).
-    step_group_uids = build_step_group(anchor_obs, index, enable_similarity, similarity_thresh)
+    with budget_timer('Grouping', time_breakdown):
+        step_group_uids = build_step_group(anchor_obs, index, enable_similarity, similarity_thresh)
 
     # Compute step relative advantages (Eq. 7 in the paper).
-    step_advantages = step_norm_reward(step_rewards, response_mask, step_group_uids, epsilon, remove_std)
+    with budget_timer('A_step', time_breakdown):
+        step_advantages = step_norm_reward(step_rewards, response_mask, step_group_uids, epsilon, remove_std)
 
     # Compute joint advantages (Eq. 8 in the paper).
     scores = episode_advantages + step_advantage_w * step_advantages
@@ -393,4 +399,3 @@ def step_norm_reward(step_rewards: torch.Tensor,
         step_advantages = scores.unsqueeze(-1).tile([1, response_length]) * response_mask
     
     return step_advantages
-

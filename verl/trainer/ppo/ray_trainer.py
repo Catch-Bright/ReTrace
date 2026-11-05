@@ -27,6 +27,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from enum import Enum
 from pprint import pprint
+from time import perf_counter
 from typing import Dict, Optional, Type
 
 import numpy as np
@@ -63,6 +64,7 @@ from verl.workers.rollout.async_server import AsyncLLMServerManager
 from gigpo import core_gigpo
 from gigpo import core_wigpo
 from gigpo import wigpo_diagnostics
+from gigpo.budget import budget_metrics, budget_timer
 
 from agent_system.multi_turn_rollout import TrajectoryCollector, adjust_batch
 
@@ -244,7 +246,7 @@ def compute_response_mask(data: DataProto):
     return attention_mask[:, -response_length:]
 
 
-def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_repeat=1, multi_turn=False, norm_adv_by_std_in_grpo=True, step_advantage_w=1.0, gigpo_mode="mean_std_norm", gigpo_enable_similarity=False, gigpo_similarity_thresh=0.95, subgroup_advantage_w=1.0, milestone_threshold=0.85, milestone_path=None, action_group_agg=False, use_prob_reweight=False, prob_reweight_clip_min=0.5, prob_reweight_clip_max=1.5, prob_reweight_temperature=1.0, tokenizer=None, **kwargs):
+def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_repeat=1, multi_turn=False, norm_adv_by_std_in_grpo=True, step_advantage_w=1.0, gigpo_mode="mean_std_norm", gigpo_enable_similarity=False, gigpo_similarity_thresh=0.95, subgroup_advantage_w=1.0, milestone_threshold=0.85, milestone_path=None, action_group_agg=False, use_prob_reweight=False, prob_reweight_clip_min=0.5, prob_reweight_clip_max=1.5, prob_reweight_temperature=1.0, tokenizer=None, enable_time_breakdown=False, time_breakdown=None, **kwargs):
     """Compute advantage estimates for policy optimization.
 
     This function computes advantage estimates using various estimators like GAE, GRPO, REINFORCE++, etc.
@@ -262,6 +264,8 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
     Returns:
         DataProto: The updated data with computed advantages and returns.
     """
+    if enable_time_breakdown and time_breakdown is None:
+        time_breakdown = {}
     # Back-compatible with trainers that do not compute response mask in fit
     if "response_mask" not in data.batch:
         data.batch["response_mask"] = compute_response_mask(data)
@@ -291,13 +295,14 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
             response_length = grpo_calculation_mask.size(1)  # Get length from the initial response mask
             grpo_calculation_mask = data.batch["loss_mask"][:, -response_length:]  # This mask is the one intended for GRPO
         # Call compute_grpo_outcome_advantage with parameters matching its definition
-        advantages, returns = core_algos.compute_grpo_outcome_advantage(
-            token_level_rewards=data.batch["token_level_rewards"],
-            response_mask=grpo_calculation_mask,
-            index=data.non_tensor_batch["uid"],
-            traj_index=data.non_tensor_batch['traj_uid'],
-            norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
-        )
+        with budget_timer('AE', time_breakdown):
+            advantages, returns = core_algos.compute_grpo_outcome_advantage(
+                token_level_rewards=data.batch["token_level_rewards"],
+                response_mask=grpo_calculation_mask,
+                index=data.non_tensor_batch["uid"],
+                traj_index=data.non_tensor_batch['traj_uid'],
+                norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
+            )
         data.batch["advantages"] = advantages
         data.batch["returns"] = returns
     elif adv_estimator == AdvantageEstimator.GRPO_PASSK:
@@ -357,24 +362,26 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
             mode=gigpo_mode,
             enable_similarity=gigpo_enable_similarity,
             similarity_thresh=gigpo_similarity_thresh,
+            time_breakdown=time_breakdown,
             )
         data.batch['advantages'] = advantages
         data.batch['returns'] = returns
     elif adv_estimator == AdvantageEstimator.WiGPO:
         # Canonical action keys for within-subgroup action-group averaging.
         action_keys = None
-        if action_group_agg:
+        if action_group_agg and subgroup_advantage_w != 0:
             raw_actions = data.non_tensor_batch.get('actions', None)
             if raw_actions is None:
                 print("[WiGPO Warning] action_group_agg=True but 'actions' is missing "
                       "from non_tensor_batch; skipping action-group aggregation.")
             else:
-                valids = data.non_tensor_batch.get('is_action_valid', None)
-                action_keys = np.array([
-                    core_wigpo.canonical_action_key(
-                        raw_actions[i], True if valids is None else bool(valids[i]))
-                    for i in range(len(raw_actions))
-                ], dtype=object)
+                with budget_timer('intra-step', time_breakdown):
+                    valids = data.non_tensor_batch.get('is_action_valid', None)
+                    action_keys = np.array([
+                        core_wigpo.canonical_action_key(
+                            raw_actions[i], True if valids is None else bool(valids[i]))
+                        for i in range(len(raw_actions))
+                    ], dtype=object)
 
         # Probability-weighted think/action split parameters
         action_token_mask = None
@@ -382,33 +389,28 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
         old_log_probs = None
         if use_prob_reweight and action_keys is not None:
             # Build action token mask
-            if tokenizer is not None and 'responses' in data.batch:
-                action_token_mask, located = core_wigpo.build_action_token_mask(
-                    responses=data.batch['responses'],
-                    response_mask=data.batch['response_mask'],
-                    tokenizer=tokenizer,
-                    summarize=True,
-                )
-                # Get old log probs for probability computation
-                if 'old_log_probs' in data.batch:
+            if (tokenizer is not None and 'responses' in data.batch
+                    and 'old_log_probs' in data.batch):
+                with budget_timer('intra-step', time_breakdown):
+                    action_token_mask, located = core_wigpo.build_action_token_mask(
+                        responses=data.batch['responses'],
+                        response_mask=data.batch['response_mask'],
+                        tokenizer=tokenizer,
+                        summarize=time_breakdown is None,
+                    )
+                    # OldProb already scored each action under its sampled think.
                     old_log_probs = data.batch['old_log_probs']
-                else:
-                    print("[WiGPO Warning] use_prob_reweight=True but 'old_log_probs' "
-                          "is missing; falling back to action-group aggregation without "
-                          "probability weighting.")
-                    action_token_mask = None
-                    located = None
             else:
-                print("[WiGPO Warning] use_prob_reweight=True but tokenizer or responses "
+                print("[WiGPO Warning] use_prob_reweight=True but tokenizer, responses or old_log_probs "
                       "is missing; falling back to action-group aggregation without "
                       "probability weighting.")
 
         advantages, returns, rho_stats = core_wigpo.compute_wigpo_outcome_advantage(
             token_level_rewards=data.batch['token_level_rewards'], # for episode group reward computing
-            step_rewards=data.batch['step_rewards'], # for step / subgroup reward computing
+            step_rewards=data.batch.get('step_rewards'), # unused when both step weights are zero
             response_mask=data.batch['response_mask'],
             anchor_obs=data.non_tensor_batch['anchor_obs'],
-            segment_ids=data.non_tensor_batch['segment_ids'],
+            segment_ids=data.non_tensor_batch.get('segment_ids'),
             index=data.non_tensor_batch['uid'],
             traj_index=data.non_tensor_batch['traj_uid'],
             step_advantage_w=step_advantage_w,
@@ -423,6 +425,8 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
             prob_reweight_clip_min=prob_reweight_clip_min,
             prob_reweight_clip_max=prob_reweight_clip_max,
             prob_reweight_temperature=prob_reweight_temperature,
+            enable_time_breakdown=enable_time_breakdown,
+            time_breakdown=time_breakdown,
             )
         data.batch['advantages'] = advantages
         data.batch['returns'] = returns
@@ -1119,6 +1123,8 @@ class RayPPOTrainer:
             for batch_dict in self.train_dataloader:
                 metrics = {}
                 timing_raw = {}
+                profile_budget = self.config.algorithm.gigpo.get('enable_time_breakdown', False)
+                advantage_timings = {} if profile_budget else None
                 batch: DataProto = DataProto.from_single_dict(batch_dict)
 
                 # pop those keys for generation
@@ -1139,6 +1145,7 @@ class RayPPOTrainer:
 
                 is_last_step = self.global_steps >= self.total_training_steps
 
+                train_start = perf_counter() if profile_budget else None
                 with _timer("step", timing_raw):
                     # generate a batch
                     with _timer("gen", timing_raw):
@@ -1179,7 +1186,7 @@ class RayPPOTrainer:
                     del batch
                     batch = gen_batch_output
 
-                    if self.config.algorithm.adv_estimator in (AdvantageEstimator.GiGPO, AdvantageEstimator.WiGPO):
+                    if self.config.algorithm.adv_estimator == AdvantageEstimator.GiGPO:
                         step_rewards_tensor = core_gigpo.compute_step_discounted_returns(
                             batch=batch,
                             gamma=self.config.algorithm.gamma
@@ -1210,43 +1217,44 @@ class RayPPOTrainer:
                             metrics.update(diag_stats)
 
                     if self.config.algorithm.adv_estimator == AdvantageEstimator.WiGPO:
-                        # Compute subtask segment metadata while step order within each
-                        # trajectory is still intact (before balance_batch reorders).
-                        if 'milestone_achieved' in batch.non_tensor_batch:
-                            # Dynamic event-driven milestones: detected inside the
-                            # env worker during rollout (WebShop AND ALFWorld, when
-                            # the fact-based detector is enabled). Derive segments
-                            # from the per-step flags; M is read per trajectory.
-                            from gigpo.core_wigpo_webshop import compute_batch_segment_meta_dynamic
-                            segment_ids, milestone_flags, num_milestones = \
-                                compute_batch_segment_meta_dynamic(batch=batch)
-                        else:
-                            # ALFWorld or other: static action anchor matching.
-                            segment_ids, milestone_flags, num_milestones = \
-                                core_wigpo.compute_batch_segment_meta(
-                                    batch=batch,
-                                    threshold=self.config.algorithm.gigpo.get('milestone_threshold', 0.85),
-                                    milestone_path=self.config.algorithm.gigpo.get('milestone_path', None),
-                                )
+                        gigpo_config = self.config.algorithm.gigpo
+                        use_subgroups = gigpo_config.subgroup_advantage_w != 0
+                        use_steps = gigpo_config.step_advantage_w != 0 or use_subgroups
+                        if use_steps:
+                            with budget_timer('inter-step', advantage_timings):
+                                shaped_reward = gigpo_config.get('use_subtask_shaped_reward', True)
+                                if shaped_reward or use_subgroups:
+                                    # Before adjust_batch duplicates and balance_batch reorders steps.
+                                    # Online milestone detection remains inside the original Rollout timer.
+                                    if 'milestone_achieved' in batch.non_tensor_batch:
+                                        from gigpo.core_wigpo_webshop import compute_batch_segment_meta_dynamic
+                                        segment_ids, milestone_flags, num_milestones = \
+                                            compute_batch_segment_meta_dynamic(batch=batch)
+                                    else:
+                                        segment_ids, milestone_flags, num_milestones = \
+                                            core_wigpo.compute_batch_segment_meta(
+                                                batch=batch,
+                                                threshold=gigpo_config.get('milestone_threshold', 0.85),
+                                                milestone_path=gigpo_config.get('milestone_path', None),
+                                            )
+                                    batch.non_tensor_batch['segment_ids'] = segment_ids
 
-                        batch.non_tensor_batch['segment_ids'] = segment_ids
-
-                        # WiGPO subtask-shaped step reward: split the task reward over
-                        # its milestones and credit each achieved subtask with a
-                        # cumulative-phase-length discount + geometric distance decay.
-                        # This REPLACES GiGPO's discounted-return step_rewards.
-                        if self.config.algorithm.gigpo.get('use_subtask_shaped_reward', True):
-                            shaped = core_wigpo.compute_subtask_shaped_step_rewards(
-                                batch=batch,
-                                segment_ids=segment_ids,
-                                milestone_flags=milestone_flags,
-                                num_milestones=num_milestones,
-                                gamma=self.config.algorithm.gamma,
-                                beta=self.config.algorithm.gigpo.get('subtask_decay_beta', 0.5),
-                                r_max=self.config.algorithm.gigpo.get('subtask_reward_max', 10.0),
-                                reward_mode=self.config.algorithm.gigpo.get('subtask_reward_mode', 'cumulative'),
-                            )
-                            batch.batch['step_rewards'] = shaped
+                                if shaped_reward:
+                                    batch.batch['step_rewards'] = core_wigpo.compute_subtask_shaped_step_rewards(
+                                        batch=batch,
+                                        segment_ids=segment_ids,
+                                        milestone_flags=milestone_flags,
+                                        num_milestones=num_milestones,
+                                        gamma=self.config.algorithm.gamma,
+                                        beta=gigpo_config.get('subtask_decay_beta', 0.5),
+                                        r_max=gigpo_config.get('subtask_reward_max', 10.0),
+                                        reward_mode=gigpo_config.get('subtask_reward_mode', 'cumulative'),
+                                    )
+                                else:
+                                    # Do not compute discounted returns that shaped rewards would overwrite.
+                                    batch.batch['step_rewards'] = core_gigpo.compute_step_discounted_returns(
+                                        batch=batch, gamma=self.config.algorithm.gamma
+                                    )
 
                     batch = adjust_batch(self.config, batch)
 
@@ -1375,12 +1383,18 @@ class RayPPOTrainer:
                             prob_reweight_clip_max=self.config.algorithm.gigpo.get('prob_reweight_clip_max', 1.5),
                             prob_reweight_temperature=self.config.algorithm.gigpo.get('prob_reweight_temperature', 1.0),
                             tokenizer=self.tokenizer,
+                            enable_time_breakdown=self.config.algorithm.gigpo.get('enable_time_breakdown', False),
+                            time_breakdown=advantage_timings,
                         )
 
                         # rho distribution of the prob-weighted split (split steps
                         # only) -> wandb metrics, for choosing clip bounds from data.
                         rho_stats = batch.meta_info.get('wigpo_rho_stats', {})
                         if rho_stats:
+                            # Extract time breakdown if present
+                            rho_stats.pop('time_breakdown', None)
+
+                            # Log rho statistics (excluding time_breakdown)
                             metrics.update(
                                 {f"gigpo/rho_{k}": v for k, v in rho_stats.items()}
                             )
@@ -1400,6 +1414,9 @@ class RayPPOTrainer:
                             actor_output = self.actor_rollout_wg.update_actor(batch)
                         actor_output_metrics = reduce_metrics(actor_output.meta_info["metrics"])
                         metrics.update(actor_output_metrics)
+
+                    if profile_budget:
+                        train_total = perf_counter() - train_start
 
                     # Log rollout generations if enabled
                     rollout_data_dir = self.config.trainer.get("rollout_data_dir", None)
@@ -1439,6 +1456,8 @@ class RayPPOTrainer:
                 # collect metrics
                 metrics.update(compute_data_metrics(batch=batch, use_critic=self.use_critic))
                 metrics.update(compute_timing_metrics(batch=batch, timing_raw=timing_raw))
+                if profile_budget:
+                    metrics.update(budget_metrics(timing_raw, advantage_timings, train_total))
                 # TODO: implement actual tflpo and theoretical tflpo
                 n_gpus = self.resource_pool_manager.get_n_gpus()
                 metrics.update(compute_throughout_metrics(batch=batch, timing_raw=timing_raw, n_gpus=n_gpus))

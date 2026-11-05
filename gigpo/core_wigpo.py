@@ -39,6 +39,7 @@ to GiGPO.
 import json
 import os
 import re
+from time import perf_counter
 import uuid
 from collections import defaultdict
 from difflib import SequenceMatcher
@@ -50,6 +51,7 @@ import torch
 from verl import DataProto
 
 from gigpo import core_gigpo
+from gigpo.budget import budget_timer
 
 
 # ---------------------------------------------------------- #
@@ -566,14 +568,15 @@ def build_subgroup_uids(step_group_uids: np.ndarray,
     key_to_uid: Dict[tuple, str] = {}
 
     # Track how each obs-group is split into subgroups
-    obs_to_subgroups: Dict[str, set] = defaultdict(set)
+    obs_to_subgroups = defaultdict(set) if summarize else None
 
     for i in range(len(step_group_uids)):
         key = (step_group_uids[i], int(segment_ids[i]))
         if key not in key_to_uid:
             key_to_uid[key] = str(uuid.uuid4())
         subgroup_uids[i] = key_to_uid[key]
-        obs_to_subgroups[step_group_uids[i]].add(key_to_uid[key])
+        if summarize:
+            obs_to_subgroups[step_group_uids[i]].add(key_to_uid[key])
 
     if summarize:
         # Compute obs-group sizes
@@ -691,7 +694,8 @@ def aggregate_action_group_rewards(step_rewards: torch.Tensor,
                 continue  # singleton bucket: mean == original value
             mean_r = out[idx].mean()
             out[idx] = mean_r
-            n_aggregated += len(idx)
+            if summarize:
+                n_aggregated += len(idx)
 
     if summarize:
         subgroup_keys: Dict[str, set] = defaultdict(set)
@@ -868,7 +872,8 @@ def build_action_token_mask(responses: torch.Tensor,
         # Full fallback: decode the whole valid response and search the text,
         # mirroring the env projection's find("<action>").
         if start_pos is None:
-            n_full_fallback += 1
+            if summarize:
+                n_full_fallback += 1
             start_pos = _locate_action_tag_full(
                 responses_cpu[b:b + 1], valid_pos, tokenizer)
 
@@ -959,7 +964,8 @@ def compute_prob_weighted_think_action_advantages(
         remove_std: bool = True,
         clip_min: float = 0.5,
         clip_max: float = 1.5,
-        summarize: bool = True):
+        summarize: bool = True,
+        time_breakdown: Optional[dict] = None):
     """
     Compute think and action advantages based on action probability weighting,
     with fallbacks for steps/subgroups where the split is ill-defined.
@@ -1018,6 +1024,8 @@ def compute_prob_weighted_think_action_advantages(
             returned in ``rho_stats`` so clip bounds can be chosen from data).
         clip_max: maximum value for rho_i; None disables clipping.
         summarize: print diagnostics.
+        time_breakdown: optional accumulator for intra-step algorithm time;
+            rho distribution diagnostics are computed outside that interval.
 
     Returns:
         think_adv: shape (bsz,), advantage for think tokens (== A_raw on
@@ -1028,6 +1036,7 @@ def compute_prob_weighted_think_action_advantages(
             and p1/p5/p50/p95/p99), n_clipped_low / n_clipped_high counts and
             the clip bounds in effect. Empty dict when no step was split.
     """
+    algorithm_start = perf_counter() if time_breakdown is not None else None
     with torch.no_grad():
         bsz = step_rewards.shape[0]
         device = step_rewards.device
@@ -1092,7 +1101,7 @@ def compute_prob_weighted_think_action_advantages(
         # steps still provide reward evidence), normalized within the subgroup.
         public_adv = torch.zeros(bsz, dtype=dtype, device=device)
         for gk, indices in group_all.items():
-            if not group_eligible[gk]:
+            if not group_eligible[gk] or not subgroup_eligible[gk[0]]:
                 continue
             sg = gk[0]
             mean_r = step_rewards[indices].mean()
@@ -1107,7 +1116,7 @@ def compute_prob_weighted_think_action_advantages(
         do_clip = clip_min is not None and clip_max is not None
         rho = torch.ones(bsz, dtype=dtype, device=device)
         for gk, indices in group_located.items():
-            if not group_eligible[gk]:
+            if not group_eligible[gk] or not subgroup_eligible[gk[0]]:
                 continue
             p_bar = action_probs[indices].mean().item()
             if p_bar <= 1e-9:
@@ -1119,20 +1128,9 @@ def compute_prob_weighted_think_action_advantages(
         # ---- final per-step advantages with fallbacks ----
         think_adv = torch.zeros(bsz, dtype=dtype, device=device)
         act_adv = torch.zeros(bsz, dtype=dtype, device=device)
-        # Steps that actually got the split. Used to filter the rho statistics:
-        # a split step whose ratio happens to equal 1.0 (p_i == p_bar) must stay
-        # in the distribution -- rho != 1 cannot distinguish it from the initial
-        # value used by fallback steps.
-        split_mask = np.zeros(bsz, dtype=bool)
-        n_split = 0
-        n_unlocated = 0
-        n_singleton_action = 0
-        n_single_action_subgroup = 0
-        n_invalid = 0
         for i in range(bsz):
             key = action_keys[i]
             if key == INVALID_ACTION_KEY:
-                n_invalid += 1
                 think_adv[i] = a_raw[i]
                 act_adv[i] = a_raw[i]
                 continue
@@ -1142,19 +1140,32 @@ def compute_prob_weighted_think_action_advantages(
                     and subgroup_eligible.get(sg, False)):
                 think_adv[i] = rho[i] * public_adv[i]
                 act_adv[i] = public_adv[i]
-                split_mask[i] = True
-                n_split += 1
             else:
-                if not located[i]:
-                    n_unlocated += 1
-                elif not group_eligible.get(gk, False):
-                    n_singleton_action += 1
-                else:
-                    n_single_action_subgroup += 1
                 think_adv[i] = a_raw[i]
                 act_adv[i] = a_raw[i]
 
+        if time_breakdown is not None:
+            time_breakdown['intra-step'] = (
+                time_breakdown.get('intra-step', 0.0) + perf_counter() - algorithm_start
+            )
+
         # ---- rho distribution for diagnostics / clip-bound selection ----
+        # Diagnostic masks/counts are deliberately outside intra-step timing.
+        split_mask = np.zeros(bsz, dtype=bool)
+        n_unlocated = n_singleton_action = n_single_action_subgroup = n_invalid = 0
+        for i in range(bsz):
+            key = action_keys[i]
+            if key == INVALID_ACTION_KEY:
+                n_invalid += 1
+            elif not located[i]:
+                n_unlocated += 1
+            elif not group_eligible.get((subgroup_uids[i], key), False):
+                n_singleton_action += 1
+            elif not subgroup_eligible.get(subgroup_uids[i], False):
+                n_single_action_subgroup += 1
+            else:
+                split_mask[i] = True
+        n_split = int(split_mask.sum())
         # Filter by split_mask (steps that actually got the split), NOT by
         # rho != 1: a split step with p_i == p_bar has rho exactly 1.0 and would
         # otherwise be dropped from the distribution.
@@ -1240,6 +1251,8 @@ def compute_wigpo_outcome_advantage(token_level_rewards: torch.Tensor,
                                     prob_reweight_clip_min: float = 0.5,
                                     prob_reweight_clip_max: float = 1.5,
                                     prob_reweight_temperature: float = 1.0,
+                                    enable_time_breakdown: bool = False,
+                                    time_breakdown: Optional[dict] = None,
                                     ):
     """
     Compute WiGPO advantages: GiGPO refined by subtask-segment subgroups.
@@ -1284,6 +1297,10 @@ def compute_wigpo_outcome_advantage(token_level_rewards: torch.Tensor,
     (weaker reweighting), T < 1 pushes them apart (stronger). T = 1 is the
     untempered behaviour.
     """
+    if time_breakdown is None and enable_time_breakdown:
+        time_breakdown = {}
+    profiling = time_breakdown is not None
+
     if mode == "mean_std_norm":
         remove_std = False
     elif mode == "mean_norm":
@@ -1292,36 +1309,48 @@ def compute_wigpo_outcome_advantage(token_level_rewards: torch.Tensor,
         raise ValueError(f"Unknown mode: {mode}")
 
     # 1. Episode-level advantage (GiGPO Eq. 3).
-    episode_advantages = core_gigpo.episode_norm_reward(
-        token_level_rewards, response_mask, index, traj_index, epsilon, remove_std
-    )
+    with budget_timer('AE', time_breakdown):
+        episode_advantages = core_gigpo.episode_norm_reward(
+            token_level_rewards, response_mask, index, traj_index, epsilon, remove_std
+        )
 
     # 2. GiGPO anchor-state (obs) grouping (Eq. 6).
-    step_group_uids = core_gigpo.build_step_group(
-        anchor_obs, index, enable_similarity, similarity_thresh, summarize=False
-    )
-
-    # 3. GiGPO step-level advantage (Eq. 7).
-    step_advantages = core_gigpo.step_norm_reward(
-        step_rewards, response_mask, step_group_uids, epsilon, remove_std
-    )
-
-    # 4. WiGPO subgroup = obs-cluster n segment.
-    subgroup_uids = build_subgroup_uids(step_group_uids, segment_ids, summarize=True)
+    step_advantages = None
+    subgroup_advantages = None
+    wigpo_rho_stats = {}
+    if step_advantage_w != 0 or subgroup_advantage_w != 0:
+        with budget_timer('inter-step', time_breakdown):
+            step_group_uids = core_gigpo.build_step_group(
+                anchor_obs, index, enable_similarity, similarity_thresh, summarize=False
+            )
+            # A zero-weight term is not evaluated just to discard its result.
+            if step_advantage_w != 0:
+                step_advantages = core_gigpo.step_norm_reward(
+                    step_rewards, response_mask, step_group_uids, epsilon, remove_std
+                )
+            if subgroup_advantage_w != 0:
+                subgroup_uids = build_subgroup_uids(
+                    step_group_uids, segment_ids, summarize=not profiling
+                )
 
     # 5. Subgroup-level advantage with probability-weighted think/action split.
-    if (action_keys is not None and action_token_mask is not None
+    if subgroup_advantage_w == 0:
+        pass
+    elif (action_keys is not None and action_token_mask is not None
         and old_log_probs is not None and located is not None):
         # Probability-weighted split: think and action get different advantages
         # based on how much the think supports the action. ``located`` gates the
         # split: steps without a detected <action> boundary (and their action
         # categories / subgroups, per the fallback rules) use A_raw instead.
 
-        # Compute action probabilities
-        action_probs = compute_action_probs(old_log_probs, action_token_mask, response_mask,
-                                            temperature=prob_reweight_temperature)
+        # Reuse OldProb's token log probabilities; there is no extra LLM forward.
+        with budget_timer('intra-step', time_breakdown):
+            action_probs = compute_action_probs(
+                old_log_probs, action_token_mask, response_mask,
+                temperature=prob_reweight_temperature,
+            )
 
-        # Compute think and action advantages
+        # Compute think and action advantages (包括动作平均奖励聚集)
         think_adv, act_adv, rho_stats = compute_prob_weighted_think_action_advantages(
             step_rewards=step_rewards,
             subgroup_uids=subgroup_uids,
@@ -1332,43 +1361,51 @@ def compute_wigpo_outcome_advantage(token_level_rewards: torch.Tensor,
             remove_std=remove_std,
             clip_min=prob_reweight_clip_min,
             clip_max=prob_reweight_clip_max,
-            summarize=True,
+            summarize=not profiling,
+            time_breakdown=time_breakdown,
         )
+
         # rho distribution (split steps) for trainer metrics / clip-bound choice
         wigpo_rho_stats = rho_stats
 
         # Broadcast to token level. For fallback steps think_adv == act_adv ==
         # A_raw, so every valid token receives the same raw advantage regardless
         # of the mask; for split steps the masks separate the two roles.
-        response_length = response_mask.shape[-1]
-        think_adv_tok = think_adv.unsqueeze(-1).tile([1, response_length]) * response_mask
-        act_adv_tok = act_adv.unsqueeze(-1).tile([1, response_length]) * response_mask
-
-        # Think mask = valid tokens that are not action tokens
-        think_mask = response_mask * (1 - action_token_mask.to(response_mask.dtype))
-
-        # Apply advantages: action tokens get act_adv, think tokens get think_adv
-        subgroup_advantages = act_adv_tok * action_token_mask.to(response_mask.dtype) + think_adv_tok * think_mask
+        with budget_timer('intra-step', time_breakdown):
+            response_length = response_mask.shape[-1]
+            think_adv_tok = think_adv.unsqueeze(-1).tile([1, response_length]) * response_mask
+            act_adv_tok = act_adv.unsqueeze(-1).tile([1, response_length]) * response_mask
+            think_mask = response_mask * (1 - action_token_mask.to(response_mask.dtype))
+            subgroup_advantages = act_adv_tok * action_token_mask.to(response_mask.dtype) + think_adv_tok * think_mask
 
     elif action_keys is not None:
         # Action-group aggregation without probability weighting
         wigpo_rho_stats = {}
-        subgroup_step_rewards = aggregate_action_group_rewards(
-            step_rewards, subgroup_uids, action_keys, summarize=True
-        )
-        subgroup_advantages = core_gigpo.step_norm_reward(
-            subgroup_step_rewards, response_mask, subgroup_uids, epsilon, remove_std,
-            std_rewards=step_rewards,
-        )
+        with budget_timer('intra-step', time_breakdown):
+            subgroup_step_rewards = aggregate_action_group_rewards(
+                step_rewards, subgroup_uids, action_keys, summarize=not profiling
+            )
+            subgroup_advantages = core_gigpo.step_norm_reward(
+                subgroup_step_rewards, response_mask, subgroup_uids, epsilon, remove_std,
+                std_rewards=step_rewards,
+            )
     else:
         # No action grouping: plain subgroup advantage
         wigpo_rho_stats = {}
-        subgroup_advantages = core_gigpo.step_norm_reward(
-            step_rewards, response_mask, subgroup_uids, epsilon, remove_std
-        )
+        with budget_timer('inter-step', time_breakdown):
+            subgroup_advantages = core_gigpo.step_norm_reward(
+                step_rewards, response_mask, subgroup_uids, epsilon, remove_std
+            )
 
     # 6. Joint advantage.
-    scores = (episode_advantages
-              + step_advantage_w * step_advantages
-              + subgroup_advantage_w * subgroup_advantages)
+    scores = episode_advantages
+    if step_advantages is not None:
+        scores = scores + step_advantage_w * step_advantages
+    if subgroup_advantages is not None:
+        scores = scores + subgroup_advantage_w * subgroup_advantages
+
+    # Add time breakdown to rho_stats if enabled
+    if enable_time_breakdown:
+        wigpo_rho_stats['time_breakdown'] = time_breakdown
+
     return scores, scores, wigpo_rho_stats

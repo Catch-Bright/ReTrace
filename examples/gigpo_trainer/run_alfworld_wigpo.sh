@@ -14,6 +14,7 @@ train_data_size=16
 val_data_size=128
 group_size=8
 mode="mean_std_norm" # "mean_norm" or "mean_std_norm"
+
 # Within each subgroup (obs cluster n segment), average step rewards over identical
 # canonical actions so the same action from the same state/stage gets the same credit
 # (removes reward differences caused by *later* action choices). Invalid actions keep
@@ -117,6 +118,7 @@ python3 -m verl.trainer.main_ppo \
     algorithm.gigpo.prob_reweight_clip_min=${prob_reweight_clip_min:-null} \
     algorithm.gigpo.prob_reweight_clip_max=${prob_reweight_clip_max:-null} \
     algorithm.gigpo.prob_reweight_temperature=$prob_reweight_temperature \
+    algorithm.gigpo.enable_time_breakdown=True \
     algorithm.gigpo.milestone_threshold=0.95 \
     algorithm.gigpo.milestone_path=$milestone_path \
     algorithm.gigpo.mode=$mode \
@@ -136,5 +138,5 @@ python3 -m verl.trainer.main_ppo \
     trainer.nnodes=1 \
     trainer.save_freq=-1 \
     trainer.test_freq=5 \
-    trainer.total_epochs=150 \
+    trainer.total_epochs=5 \
     trainer.val_before_train=True $@
